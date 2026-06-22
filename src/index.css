@@ -1,0 +1,93 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;550;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-white: #18181B; /* Main card and box background of Elegant Dark */
+  --color-zinc-50: #0A0A0B; /* Global canvas background of Elegant Dark */
+  --color-zinc-100: #27272A; /* Slate light accents */
+  --color-zinc-150: #1C1C1E; /* Sub border adjustments */
+  --color-zinc-200: #27272A; /* Main borders of Elegant Dark #27272A */
+  --color-zinc-300: #3F3F46; /* Mid tone gray */
+  --color-zinc-400: #52525B; /* Darker labels */
+  --color-zinc-500: #71717A; /* Muted subtitle colors of Elegant Dark */
+  --color-zinc-550: #A1A1AA; /* Medium gray */
+  --color-zinc-600: #71717A; /* Secondary labels */
+  --color-zinc-650: #A1A1AA;
+  --color-zinc-700: #D4D4D8; /* Standard body text */
+  --color-zinc-800: #E4E4E7; /* Prominent text of Elegant Dark */
+  --color-zinc-805: #E4E4E7;
+  --color-zinc-850: #F4F4F5;
+  --color-zinc-900: #E4E4E7; /* Near white headers */
+  --color-zinc-950: #F4F4F5; /* Crisp titles */
+  
+  --color-indigo-50: #111022; /* Dark ambient Indigo background */
+  --color-indigo-100: #1E1B4B; /* Indigo badge background */
+  --color-indigo-150: #312E81; /* Indigo border accents */
+  --color-indigo-600: #6366F1; /* Primary Elegant Dark purple-indigo */
+  --color-indigo-650: #4F46E5;
+  --color-indigo-700: #4F46E5;
+  --color-indigo-750: #4338CA;
+  --color-indigo-800: #6366F1;
+  --color-indigo-850: #C7D2FE; /* Bright purple text for dark background tags */
+
+  --color-sky-50: #082F49; /* Dark sky badge background */
+  --color-sky-850: #BAE6FD; /* Bright sky text */
+
+  --color-red-50: #450A0A; /* Critical urgency background */
+  --color-red-800: #FECACA; /* Critical urgency text */
+
+  --color-emerald-50: #022C22; /* Success/Status active background */
+  --color-emerald-100: #064E3B; /* Success border */
+  --color-emerald-500: #10B981;
+  --color-emerald-600: #10B981;
+  --color-emerald-800: #A7F3D0; /* Success text */
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+}
+
+/* Base resets & styles for smooth performance */
+html, body {
+  background-color: #0A0A0B;
+  color: #E4E4E7;
+  font-family: var(--font-sans);
+}
+
+select {
+  color-scheme: dark;
+}
+
+input, textarea, select {
+  background-color: #18181B !important;
+  border-color: #27272A !important;
+  color: #F4F4F5 !important;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: #6366F1 !important;
+  outline: none;
+}
+
+::selection {
+  background-color: rgba(99, 102, 241, 0.35);
+  color: #FFFFFF;
+}
+
+/* Smooth customized dark scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0A0A0B;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272A;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3F3F46;
+}

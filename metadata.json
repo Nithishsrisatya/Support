@@ -1,0 +1,6 @@
+{
+  "name": "Integrated Support Ticket & Task Management System",
+  "description": "A comprehensive customer support ticketing and internal task management platform featuring Role-Based Access Control, automated metrics, audit logs, and status dashboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
