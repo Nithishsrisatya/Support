@@ -1,10 +1,13 @@
 import React, { useState } from "react";
-import { User, Client, Ticket, Task, Notification, TicketStatus, TaskStatus, TicketPriority } from "../types";
-import { formatDate, formatDateTime } from "../utils";
+import { User, Client, Ticket, Task, Notification, TicketStatus, TaskStatus } from "../types";
+import { formatDate } from "../utils";
 import { 
-  ClipboardList, Clock, CheckCircle2, ChevronRight, Save, Upload, 
-  HelpCircle, AlertTriangle, AlertCircle, FileText, Send, Sparkles
+  Clock, CheckCircle2, Upload, FileText, AlertTriangle, ShieldAlert, Eye, LayoutDashboard,
+  Calendar as CalendarIcon
 } from "lucide-react";
+import TicketDetailModal from "./TicketDetailModal";
+import HomeDashboard from "./HomeDashboard";
+import DeadlineCalendar from "./DeadlineCalendar";
 
 interface EmployeeDashboardProps {
   currentEmployee: User;
@@ -25,30 +28,27 @@ export default function EmployeeDashboard({
   onUpdateTicketStatus,
   onUpdateTaskStatus,
 }: EmployeeDashboardProps) {
-  // Tabs: 'tickets' | 'tasks' | 'deadlines'
-  const [activeTab, setActiveTab] = useState<"tickets" | "tasks" | "deadlines">("tickets");
+const [activeTab, setActiveTab] = useState<"dashboard" | "tickets" | "tasks" | "deadlines">("dashboard");
   
-  // Modal / Form trigger states
   const [resolvingTicketId, setViewingResolutionModal] = useState<string | null>(null);
   const [completingTaskId, setViewingCompletionModal] = useState<string | null>(null);
+  const [selectedTicketDetail, setSelectedTicketDetail] = useState<Ticket | null>(null);
 
-  // Forms states
   const [resolutionSummary, setResolutionSummary] = useState("");
   const [resolutionNotes, setResolutionNotes] = useState("");
   const [taskNotes, setTaskNotes] = useState("");
   const [uploadedFileName, setUploadedFileName] = useState("");
 
-  // Filter personal data
   const employeeTickets = tickets.filter((t) => t.assignedTo === currentEmployee.id);
   const employeeTasks = tasks.filter((t) => t.assignedTo === currentEmployee.id);
 
-  // Stats Counters
-  const countAssignedTasks = employeeTasks.filter((t) => t.status === "Assigned").length;
-  const countInProgressTasks = employeeTasks.filter((t) => t.status === "In Progress").length;
-  const countCompletedTasks = employeeTasks.filter((t) => t.status === "Completed").length;
+  const countInProgressTasks = employeeTasks.filter((t) => t.status !== "Completed" && ["In Progress", "Assigned"].includes(t.status)).length;
   const countOpenTickets = employeeTickets.filter((t) => t.status !== "Closed" && t.status !== "Resolved").length;
 
-  // Handle mock file uploads
+  // Focus Mode Calculations
+  const overdueTasks = employeeTasks.filter(t => t.isOverdue && t.status !== "Completed");
+  const criticalTickets = employeeTickets.filter(t => t.status !== "Closed" && t.status !== "Resolved" && t.priority === "Critical");
+
   const handleMockUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       setUploadedFileName(e.target.files[0].name);
@@ -58,11 +58,7 @@ export default function EmployeeDashboard({
   const handleResolveTicketSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!resolvingTicketId || !resolutionSummary) return;
-    
-    // Resolve ticket and save
     onUpdateTicketStatus(resolvingTicketId, "Resolved", resolutionNotes, resolutionSummary);
-    
-    // Reset Form
     setResolutionSummary("");
     setResolutionNotes("");
     setViewingResolutionModal(null);
@@ -71,16 +67,8 @@ export default function EmployeeDashboard({
   const handleCompleteTaskSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!completingTaskId) return;
-
-    // Compile completion note including mocked upload files name
-    const finalNote = uploadedFileName 
-      ? `${taskNotes} (Attached file: ${uploadedFileName})` 
-      : taskNotes;
-
-    // Complete task and save
+    const finalNote = uploadedFileName ? `${taskNotes} (Attached file: ${uploadedFileName})` : taskNotes;
     onUpdateTaskStatus(completingTaskId, "Completed", finalNote);
-
-    // Reset Form
     setTaskNotes("");
     setUploadedFileName("");
     setViewingCompletionModal(null);
@@ -89,155 +77,172 @@ export default function EmployeeDashboard({
   return (
     <div className="space-y-6">
       
-      {/* Dashboard Greeting Banner */}
-      <div className="rounded-2xl border border-zinc-250 bg-white p-5 flex flex-col justify-between sm:flex-row sm:items-center gap-4">
+      {/* 1. Dynamic Greeting Banner */}
+      <div className="rounded-2xl border border-zinc-200 bg-white p-5 flex flex-col justify-between sm:flex-row sm:items-center gap-4 shadow-sm">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping"></span>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 font-mono">Operations Console active</span>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 font-mono">Workspace Active</span>
           </div>
-          <h2 className="text-lg font-bold text-zinc-900 font-sans mt-0.5">David Kim, Operations Engineer</h2>
+          <h2 className="text-lg font-bold text-zinc-900 font-sans">
+            {currentEmployee.fullName}, {currentEmployee.department}
+          </h2>
           <p className="text-xs text-zinc-500 leading-normal">
-            Active workspace directory. Work on assigned support tickets, complete task logs, and ensure SLA uptime.
+            Manage your support tickets, complete compliance tasks, and maintain SLA uptime.
           </p>
         </div>
 
-        {/* Counters summary widget */}
         <div className="flex gap-4 text-xs font-semibold font-mono text-zinc-700 bg-zinc-50 rounded-xl p-3 border border-zinc-150">
           <div>
-            <span className="block text-[8px] text-zinc-400 uppercase tracking-widest leading-none">Open Tickets</span>
-            <span className="block text-base font-bold text-indigo-600 mt-1">{countOpenTickets} cases</span>
+            <span className="block text-[9px] text-zinc-400 uppercase tracking-widest leading-none">Open Tickets</span>
+            <span className="block text-xl font-bold text-indigo-600 mt-1">{countOpenTickets}</span>
           </div>
-          <div className="border-l border-zinc-200 pl-3">
-            <span className="block text-[8px] text-zinc-400 uppercase tracking-widest leading-none">In Progress Tasks</span>
-            <span className="block text-base font-bold text-zinc-900 mt-1">{countInProgressTasks} active</span>
+          <div className="border-l border-zinc-200 pl-4">
+            <span className="block text-[9px] text-zinc-400 uppercase tracking-widest leading-none">Active Tasks</span>
+            <span className="block text-xl font-bold text-emerald-600 mt-1">{countInProgressTasks}</span>
           </div>
         </div>
       </div>
 
-      {/* Primary Workspace Nav Subtabs */}
+      {/* 2. Focus Mode Alert Banner (Only shows if urgent items exist) */}
+      {(overdueTasks.length > 0 || criticalTickets.length > 0) && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 flex items-start gap-3 animate-in fade-in slide-in-from-top-2">
+          <AlertTriangle className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
+          <div>
+            <h3 className="text-sm font-bold text-red-900">Focus Mode: Action Required</h3>
+            <p className="text-xs text-red-700 mt-1">
+              You have {criticalTickets.length > 0 ? <span className="font-bold">{criticalTickets.length} critical ticket(s)</span> : null} 
+              {criticalTickets.length > 0 && overdueTasks.length > 0 ? " and " : null}
+              {overdueTasks.length > 0 ? <span className="font-bold">{overdueTasks.length} overdue task(s)</span> : null} that require immediate attention.
+            </p>
+          </div>
+        </div>
+      )}
+
+{/* Primary Workspace Nav Subtabs */}
       <div className="flex gap-1.5 rounded-xl bg-zinc-100 p-1 w-max">
         <button
+          onClick={() => setActiveTab("dashboard")}
+          className={`px-4 py-2 text-xs font-bold uppercase tracking-wide rounded-lg transition duration-150 flex items-center gap-1.5 ${
+            activeTab === "dashboard" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+          }`}
+        >
+          <LayoutDashboard size={14} />
+          Dashboard
+        </button>
+        <button
           onClick={() => setActiveTab("tickets")}
-          className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wide rounded-lg transition duration-150 ${
+          className={`px-4 py-2 text-xs font-bold uppercase tracking-wide rounded-lg transition duration-150 ${
             activeTab === "tickets" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
           }`}
         >
-          My Support Cases ({employeeTickets.filter(t => t.status !== "Closed" && t.status !== "Resolved").length})
+          Support Cases ({employeeTickets.filter(t => t.status !== "Closed" && t.status !== "Resolved").length})
         </button>
         <button
           onClick={() => setActiveTab("tasks")}
-          className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wide rounded-lg transition duration-150 ${
+          className={`px-4 py-2 text-xs font-bold uppercase tracking-wide rounded-lg transition duration-150 ${
             activeTab === "tasks" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
           }`}
         >
-          My Tasks ({employeeTasks.filter(tk => tk.status !== "Completed").length})
+          Internal Tasks ({employeeTasks.filter(tk => tk.status !== "Completed").length})
         </button>
         <button
           onClick={() => setActiveTab("deadlines")}
-          className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wide rounded-lg transition duration-150 ${
+          className={`px-4 py-2 text-xs font-bold uppercase tracking-wide rounded-lg transition duration-150 flex items-center gap-1.5 ${
             activeTab === "deadlines" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
           }`}
         >
-          My Deadline Monitor
+          <CalendarIcon size={14} />
+          Deadline Calendar
         </button>
       </div>
+
+{/* Dashboard Overview */}
+      {activeTab === "dashboard" && (
+        <HomeDashboard
+          tickets={tickets}
+          tasks={tasks}
+          users={[currentEmployee]}
+        />
+      )}
 
       {/* MY SUPPORT TICKETS PANEL */}
       {activeTab === "tickets" && (
         <div className="space-y-4 animate-in fade-in duration-200">
-          
-          <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
+          <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
             {employeeTickets.length === 0 ? (
-              <p className="py-12 text-center text-zinc-450 text-xs">No support tickets have been assigned to your workspace yet.</p>
+              <p className="py-12 text-center text-zinc-500 text-sm">No support tickets have been assigned to your workspace.</p>
             ) : (
-              <div className="divide-y divide-zinc-150">
+              <div className="divide-y divide-zinc-100">
                 {employeeTickets.map((ticket) => {
                   const client = clients.find((c) => c.id === ticket.clientId);
                   const isClosed = ticket.status === "Closed" || ticket.status === "Resolved";
+                  const isCritical = ticket.priority === "Critical" && !isClosed;
 
                   return (
-                    <div key={ticket.id} className="p-5 flex flex-col md:flex-row md:items-start justify-between gap-4 hover:bg-zinc-50/40 transition text-xs">
-                      <div className="space-y-1.5 flex-1 select-none">
-                        <div className="flex items-center gap-2 font-mono text-[10px]">
+                    <div key={ticket.id} className={`p-5 flex flex-col md:flex-row md:items-start justify-between gap-4 transition text-sm ${isCritical ? 'bg-red-50/30' : 'hover:bg-zinc-50/50'}`}>
+                      <div className="space-y-2 flex-1">
+                        <div className="flex items-center gap-2 font-mono text-[11px]">
                           <span className="font-bold text-zinc-900">{ticket.id}</span>
                           <span className="text-zinc-300">·</span>
-                          <span className="font-semibold text-indigo-650">{client?.companyName}</span>
+                          <span className="font-semibold text-indigo-600">{client?.companyName}</span>
                           <span className="text-zinc-300">·</span>
-                          <span className="text-zinc-400">Received {formatDate(ticket.createdDate)}</span>
+                          <span className="text-zinc-500">{formatDate(ticket.createdDate)}</span>
                         </div>
 
-                        <h4 className="text-xs font-bold text-zinc-900 leading-snug">{ticket.subject}</h4>
-                        <p className="text-[11px] text-zinc-500 leading-relaxed text-zinc-650 max-w-2xl">{ticket.description}</p>
+                        <h4 className="text-sm font-bold text-zinc-900 flex items-center gap-2">
+                          {isCritical && <ShieldAlert className="h-4 w-4 text-red-600" />}
+                          {ticket.subject}
+                        </h4>
+                        <p className="text-xs text-zinc-600 leading-relaxed max-w-3xl">{ticket.description}</p>
 
-                        <div className="flex flex-wrap gap-2 text-[9px] font-bold font-mono tracking-wide uppercase pt-1">
-                          <span className={`rounded-xl px-1.5 py-0.2 ${
-                            ticket.priority === "Critical" ? "bg-red-50 text-red-800 animate-pulse" :
-                            ticket.priority === "High" ? "bg-orange-50 text-orange-850" : "bg-zinc-100 text-zinc-800"
+                        <div className="flex gap-2 text-[10px] font-bold font-mono uppercase pt-2">
+                          <span className={`rounded-md px-2 py-1 ${
+                            ticket.priority === "Critical" ? "bg-red-100 text-red-800" :
+                            ticket.priority === "High" ? "bg-orange-100 text-orange-800" : "bg-zinc-100 text-zinc-800"
                           }`}>
-                            {ticket.priority} Urgency
+                            {ticket.priority}
                           </span>
-                          <span className="rounded-xl bg-sky-50 px-1.5 py-0.2 text-sky-850">
-                            {ticket.category}
-                          </span>
-                          <span className="rounded bg-zinc-100 px-1.5 py-0.2 text-zinc-600">
-                            State: {ticket.status}
+                          <span className="rounded-md bg-zinc-100 px-2 py-1 text-zinc-600">
+                            Status: {ticket.status}
                           </span>
                         </div>
                       </div>
 
-                      {/* Interactive Workspace workflows */}
                       {!isClosed ? (
-                        <div className="shrink-0 flex sm:flex-col items-stretch gap-2 bg-zinc-50 p-3 rounded-lg border border-zinc-150">
+                        <div className="shrink-0 flex sm:flex-col items-stretch gap-2 bg-zinc-50 p-3 rounded-xl border border-zinc-200">
+                          <button
+                            onClick={() => setSelectedTicketDetail(ticket)}
+                            className="rounded-lg bg-indigo-600 px-4 py-2 font-bold text-white hover:bg-indigo-700 text-xs shadow-sm flex items-center justify-center gap-1"
+                          >
+                            <Eye className="h-3.5 w-3.5" /> View Details
+                          </button>
                           {ticket.status === "Assigned" && (
-                            <button
-                              type="button"
-                              onClick={() => onUpdateTicketStatus(ticket.id, "In Progress")}
-                              className="rounded-lg bg-zinc-950 px-3.5 py-1.5 font-bold text-white transition hover:bg-zinc-800 tracking-wide text-xs"
-                            >
+                            <button onClick={() => onUpdateTicketStatus(ticket.id, "In Progress")} className="rounded-lg bg-zinc-900 px-4 py-2 font-bold text-white hover:bg-zinc-800 text-xs">
                               Accept & Start Work
                             </button>
                           )}
-
                           {ticket.status === "In Progress" && (
-                            <div className="w-full flex flex-col gap-2">
-                              {/* Request user response / pause */}
-                              <button
-                                type="button"
-                                onClick={() => onUpdateTicketStatus(ticket.id, "Pending")}
-                                className="rounded-lg border border-zinc-200 bg-white px-3.5 py-1.5 font-semibold text-zinc-700 transition hover:bg-zinc-50"
-                              >
+                            <>
+                              <button onClick={() => onUpdateTicketStatus(ticket.id, "Pending")} className="rounded-lg border border-zinc-200 bg-white px-4 py-2 font-bold text-zinc-700 hover:bg-zinc-50 text-xs">
                                 Wait for Client Info
                               </button>
-                              
-                              <button
-                                type="button"
-                                onClick={() => setViewingResolutionModal(ticket.id)}
-                                className="rounded-lg bg-indigo-600 px-3.5 py-1.5 font-bold text-white transition hover:bg-indigo-700 tracking-wide text-xs"
-                              >
-                                Resolve Support Ticket
+                              <button onClick={() => setViewingResolutionModal(ticket.id)} className="rounded-lg bg-indigo-600 px-4 py-2 font-bold text-white hover:bg-indigo-700 text-xs shadow-sm">
+                                Resolve Ticket
                               </button>
-                            </div>
+                            </>
                           )}
-
                           {ticket.status === "Pending" && (
-                            <button
-                              type="button"
-                              onClick={() => onUpdateTicketStatus(ticket.id, "In Progress")}
-                              className="rounded-lg bg-zinc-900 px-3.5 py-1.5 font-bold text-white text-xs"
-                            >
-                              Resume Investigation
+                            <button onClick={() => onUpdateTicketStatus(ticket.id, "In Progress")} className="rounded-lg bg-zinc-900 px-4 py-2 font-bold text-white hover:bg-zinc-800 text-xs">
+                              Resume Work
                             </button>
                           )}
                         </div>
                       ) : (
-                        <div className="shrink-0 bg-emerald-50 border border-emerald-100 rounded-lg p-3 text-emerald-800 self-start">
-                          <p className="font-bold flex items-center gap-1">
+                        <div className="shrink-0 bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-emerald-800 self-start">
+                          <p className="font-bold flex items-center gap-1.5 text-sm">
                             <CheckCircle2 className="h-4 w-4" />
-                            <span>Resolved Case</span>
-                          </p>
-                          <p className="text-[10px] text-emerald-600 mt-0.5 leading-normal max-w-[160px]">
-                            Successfully resolved. Log closed files securely.
+                            Resolved Case
                           </p>
                         </div>
                       )}
@@ -247,129 +252,61 @@ export default function EmployeeDashboard({
               </div>
             )}
           </div>
-
-          {/* RESOLVE TICKET DIALOG SHEET */}
-          {resolvingTicketId && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-              <div className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
-                <h3 className="text-base font-bold text-zinc-900 font-sans">
-                  Generate Ticket Resolution brief
-                </h3>
-                <p className="text-xs text-zinc-400 mt-1 pb-3 border-b border-zinc-100">
-                  Provide diagnostic findings. This summary will be sent directly to the client's coordinator.
-                </p>
-
-                <form onSubmit={handleResolveTicketSubmit} className="mt-4 space-y-3.5 text-xs">
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Resolution Summary *</label>
-                    <textarea
-                      required
-                      rows={3}
-                      value={resolutionSummary}
-                      onChange={(e) => setResolutionSummary(e.target.value)}
-                      placeholder="e.g. Cleared load balancer threads, patched index key socket leaks, and restarted live operations gateway."
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Internal Engineering Notes (Optional)</label>
-                    <textarea
-                      rows={2}
-                      value={resolutionNotes}
-                      onChange={(e) => setResolutionNotes(e.target.value)}
-                      placeholder="e.g. Leaks resolved. Plugs will automatically hold Tier-3 load cycles."
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-zinc-100 mt-5">
-                    <button
-                      type="button"
-                      onClick={() => setViewingResolutionModal(null)}
-                      className="rounded-lg border border-zinc-200 bg-white px-4 py-2 font-semibold text-zinc-650"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="rounded-lg bg-indigo-600 px-4 py-2 font-bold text-white transition hover:bg-indigo-700"
-                    >
-                      Complete Resolution
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
         </div>
       )}
 
       {/* MY ASSIGNED TASKS PANEL */}
       {activeTab === "tasks" && (
         <div className="space-y-4 animate-in fade-in duration-200">
-          
           <div className="grid gap-4 md:grid-cols-2">
             {employeeTasks.length === 0 ? (
-              <p className="py-12 text-center text-zinc-450 text-xs col-span-2">No organizational tasks have been assigned to your workspace.</p>
+              <p className="py-12 text-center text-zinc-500 text-sm col-span-2">No organizational tasks have been assigned.</p>
             ) : (
               employeeTasks.map((task) => {
                 const isCompleted = task.status === "Completed";
-                const isOverdue = task.status !== "Completed" && new Date(task.dueDate) < new Date("2026-06-16");
+                const isOverdue = task.isOverdue; // Use the isOverdue flag from the task object
 
                 return (
-                  <div key={task.id} className={`rounded-x2 border bg-white p-5 rounded-2xl shadow-sm space-y-4 hover:shadow-md transition text-xs flex flex-col justify-between ${
-                    isOverdue ? "border-red-200 bg-red-50/10" : "border-zinc-200"
+                  <div key={task.id} className={`border bg-white p-6 rounded-2xl shadow-sm space-y-4 hover:shadow-md transition text-sm flex flex-col justify-between ${
+                    isOverdue ? "border-red-300 bg-red-50/20" : "border-zinc-200"
                   }`}>
-                    <div className="space-y-1.5 flex-1">
-                      <div className="flex items-center justify-between text-zinc-400 font-mono text-[9px] uppercase font-semibold">
-                        <span>Ref: {task.id} · {task.taskCategory}</span>
-                        <span className={`rounded-xl px-2 py-0.5 text-[9px] font-bold ${
-                          isCompleted ? "bg-emerald-50 text-emerald-800" :
-                          task.status === "Escalated" || isOverdue ? "bg-red-50 text-red-900 animate-pulse" :
-                          "bg-sky-50 text-sky-850"
+                    <div className="space-y-2 flex-1">
+                      <div className="flex items-center justify-between text-zinc-500 font-mono text-[10px] uppercase font-bold">
+                        <span>Ref: {task.id}</span>
+                        <span className={`rounded-md px-2 py-1 ${
+                          isCompleted ? "bg-emerald-100 text-emerald-800" :
+                          isOverdue ? "bg-red-100 text-red-800" : "bg-sky-100 text-sky-800"
                         }`}>
                           {task.status} {isOverdue && "(OVERDUE)"}
                         </span>
                       </div>
-
-                      <h4 className="font-bold text-zinc-900 text-xs">{task.title}</h4>
-                      <p className="text-[11px] text-zinc-550 leading-normal text-zinc-600">{task.description}</p>
+                      <h4 className="font-bold text-zinc-900">{task.title}</h4>
+                      <p className="text-xs text-zinc-600 leading-relaxed">{task.description}</p>
                     </div>
 
-                    <div className="space-y-3.5 pt-3 border-t border-zinc-100 flex flex-col gap-2">
-                      <div className="flex items-center justify-between mt-1 text-[11px] text-zinc-500 font-mono select-none">
-                        <span>Fulfill Deadline:</span>
-                        <span className={isOverdue ? "text-red-600 font-bold" : "text-zinc-850"}>{formatDate(task.dueDate)}</span>
+                    <div className="space-y-4 pt-4 border-t border-zinc-100 flex flex-col">
+                      <div className="flex items-center justify-between text-xs font-mono">
+                        <span className="text-zinc-500">Deadline:</span>
+                        <span className={isOverdue ? "text-red-600 font-bold" : "text-zinc-900 font-bold"}>{formatDate(task.dueDate)}</span>
                       </div>
 
                       {!isCompleted ? (
                         <div className="flex items-center gap-2">
                           {task.status === "Assigned" && (
-                            <button
-                              type="button"
-                              onClick={() => onUpdateTaskStatus(task.id, "In Progress")}
-                              className="flex-1 rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-zinc-800"
-                            >
+                            <button onClick={() => onUpdateTaskStatus(task.id, "In Progress")} className="flex-1 rounded-lg bg-zinc-900 px-3 py-2 text-xs font-bold text-white hover:bg-zinc-800 transition shadow-sm">
                               Accept Task
                             </button>
                           )}
-
                           {(task.status === "In Progress" || task.status === "Escalated") && (
-                            <button
-                              type="button"
-                              onClick={() => setViewingCompletionModal(task.id)}
-                              className="flex-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-700"
-                            >
-                              Set Fuses (Complete)
+                            <button onClick={() => setViewingCompletionModal(task.id)} className="flex-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 transition shadow-sm">
+                              Complete Task
                             </button>
                           )}
                         </div>
                       ) : (
-                        <div className="p-3 bg-zinc-50 rounded-lg text-zinc-500">
-                          <p className="font-mono text-[9px] uppercase tracking-wider">Completed logs</p>
-                          <p className="mt-1 italic text-zinc-600 font-sans">"{task.completionNotes}"</p>
+                        <div className="p-3 bg-zinc-50 rounded-xl text-zinc-600 border border-zinc-100 text-xs">
+                          <p className="font-bold text-zinc-800 flex items-center gap-1.5 mb-1"><CheckCircle2 className="h-3 w-3 text-emerald-600"/> Completed logs</p>
+                          <p className="italic">"{task.completionNotes}"</p>
                         </div>
                       )}
                     </div>
@@ -378,116 +315,92 @@ export default function EmployeeDashboard({
               })
             )}
           </div>
-
-          {/* COMPLETE TASK DIALOG SHEET */}
-          {completingTaskId && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-              <div className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
-                <h3 className="text-base font-bold text-zinc-900 font-sans flex items-center gap-1.5">
-                  <CheckCircle2 className="h-5 w-5 text-emerald-600" />
-                  <span>Verify Work Completion</span>
-                </h3>
-                <p className="text-xs text-zinc-400 mt-1 pb-3 border-b border-zinc-100 leading-normal">
-                  Supply auditing notes and attach execution reports. Checked files are saved on secure VPS system files.
-                </p>
-
-                <form onSubmit={handleCompleteTaskSubmit} className="mt-4 space-y-4.5 text-xs">
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Completion Notes *</label>
-                    <textarea
-                      required
-                      rows={2.5}
-                      value={taskNotes}
-                      onChange={(e) => setTaskNotes(e.target.value)}
-                      placeholder="e.g. Conducted localized MFA sweeps, flagged inactive sessions, and verified key audits pass securely."
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-zinc-805 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Mock Attachment Document (Optional)</label>
-                    <div className="flex items-center justify-between border border-dashed border-zinc-250 rounded-xl p-3.5 bg-zinc-50/50 hover:bg-zinc-50 transition cursor-pointer relative">
-                      <input
-                        type="file"
-                        onChange={handleMockUpload}
-                        className="absolute inset-0 opacity-0 cursor-pointer"
-                      />
-                      <div className="flex items-center gap-2">
-                        <Upload className="h-4 w-4 text-zinc-405" />
-                        <span className="text-zinc-500 font-medium">
-                          {uploadedFileName || "Choose compliance proof..."}
-                        </span>
-                      </div>
-                      <span className="text-[9px] uppercase tracking-wider text-indigo-600 font-mono font-bold">Select</span>
-                    </div>
-                    {uploadedFileName && (
-                      <p className="text-[10px] text-emerald-600 mt-1.5 flex items-center gap-1 select-none">
-                        <FileText className="h-3 w-3" />
-                        <span>Ready upload metadata: {uploadedFileName}</span>
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-zinc-100 mt-5">
-                    <button
-                      type="button"
-                      onClick={() => setViewingCompletionModal(null)}
-                      className="rounded-lg border border-zinc-200 bg-white px-4 py-2 font-semibold text-zinc-650"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="rounded-lg bg-emerald-600 px-4 py-2 font-bold text-white transition hover:bg-emerald-700"
-                    >
-                      File Complete Report
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
         </div>
       )}
 
-      {/* DEADLINE MONITOR TAB */}
+      {/* DEADLINE CALENDAR */}
       {activeTab === "deadlines" && (
-        <div className="rounded-2xl border border-zinc-200 bg-white p-5 space-y-4 animate-in fade-in duration-200 text-xs">
-          <div className="border-b border-zinc-100 pb-3 flex items-center gap-2">
-            <Clock className="h-5 w-5 text-indigo-600" />
-            <div>
-              <h3 className="text-sm font-bold text-zinc-950 font-sans">Deadline Calendar Monitor</h3>
-              <p className="text-zinc-450 text-[11px] leading-relaxed">System dates are calibrated relative to audit epoch 2026-06-16.</p>
-            </div>
-          </div>
+        <div className="space-y-6 animate-in fade-in duration-200">
+          <DeadlineCalendar
+            currentUserRole="Employee"
+            currentUserId={currentEmployee.id}
+            currentUserName={currentEmployee.fullName}
+          />
+        </div>
+      )}
 
-          <div className="space-y-2">
-            {employeeTasks.map((t) => {
-              const isOverdue = t.status !== "Completed" && new Date(t.dueDate) < new Date("2026-06-16");
-              return (
-                <div key={t.id} className={`p-4 rounded-xl border flex items-center justify-between gap-4 ${
-                  t.status === "Completed" ? "bg-emerald-50/15 border-emerald-150 text-emerald-800" :
-                  isOverdue ? "bg-red-50/15 border-red-200 text-red-900 animate-pulse" :
-                  "bg-zinc-50/50 border-zinc-150 text-zinc-800"
-                }`}>
-                  <div className="space-y-0.5">
-                    <p className="font-mono text-[9px] uppercase tracking-wide text-zinc-400">Ref: {t.id} · Category: {t.taskCategory}</p>
-                    <p className="font-bold text-zinc-950">{t.title}</p>
-                    <p className="text-[10px] text-zinc-500">SLA Priority: {t.priority} Urgency</p>
-                  </div>
+      {/* RESOLVE TICKET MODAL */}
+      {resolvingTicketId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-7 shadow-2xl">
+            <h3 className="text-lg font-bold text-zinc-900">Resolve Ticket</h3>
+            <p className="text-sm text-zinc-500 mt-1 mb-5">Provide diagnostic findings for the client.</p>
 
-                  <div className="text-right shrink-0">
-                    <span className="block text-[8px] uppercase tracking-widest text-zinc-400 font-mono">Limit target</span>
-                    <span className={`font-mono font-bold text-xs ${isOverdue ? "text-red-600 font-extrabold" : "text-zinc-850"}`}>
-                      {t.dueDate} {isOverdue && "(OVERDUE)"}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
+            <form onSubmit={handleResolveTicketSubmit} className="space-y-4 text-sm">
+              <div>
+                <label className="block font-bold text-zinc-700 mb-1.5">Resolution Summary *</label>
+                <textarea required rows={3} value={resolutionSummary} onChange={(e) => setResolutionSummary(e.target.value)} className="w-full rounded-xl border border-zinc-200 p-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" />
+              </div>
+              <div>
+                <label className="block font-bold text-zinc-700 mb-1.5">Internal Notes (Optional)</label>
+                <textarea rows={2} value={resolutionNotes} onChange={(e) => setResolutionNotes(e.target.value)} className="w-full rounded-xl border border-zinc-200 p-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" />
+              </div>
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button type="button" onClick={() => setViewingResolutionModal(null)} className="rounded-xl px-4 py-2 font-bold text-zinc-600 hover:bg-zinc-100">Cancel</button>
+                <button type="submit" className="rounded-xl bg-indigo-600 px-5 py-2 font-bold text-white hover:bg-indigo-700 shadow-sm">Resolve</button>
+              </div>
+            </form>
           </div>
         </div>
+      )}
+
+      {/* COMPLETE TASK MODAL */}
+      {completingTaskId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-7 shadow-2xl">
+            <h3 className="text-lg font-bold text-zinc-900 flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-emerald-600" /> Verify Completion
+            </h3>
+            <p className="text-sm text-zinc-500 mt-1 mb-5">Supply auditing notes and execution reports.</p>
+
+            <form onSubmit={handleCompleteTaskSubmit} className="space-y-4 text-sm">
+              <div>
+                <label className="block font-bold text-zinc-700 mb-1.5">Completion Notes *</label>
+                <textarea required rows={3} value={taskNotes} onChange={(e) => setTaskNotes(e.target.value)} className="w-full rounded-xl border border-zinc-200 p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+              </div>
+              <div>
+                <label className="block font-bold text-zinc-700 mb-1.5">Attachment (Optional)</label>
+                <div className="flex items-center justify-between border-2 border-dashed border-zinc-200 rounded-xl p-4 hover:bg-zinc-50 cursor-pointer relative">
+                  <input type="file" onChange={handleMockUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+                  <div className="flex items-center gap-2">
+                    <Upload className="h-5 w-5 text-zinc-400" />
+                    <span className="text-zinc-600 font-medium">{uploadedFileName || "Choose file..."}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button type="button" onClick={() => setViewingCompletionModal(null)} className="rounded-xl px-4 py-2 font-bold text-zinc-600 hover:bg-zinc-100">Cancel</button>
+                <button type="submit" className="rounded-xl bg-emerald-600 px-5 py-2 font-bold text-white hover:bg-emerald-700 shadow-sm">Complete Task</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* TICKET DETAIL MODAL */}
+      {selectedTicketDetail && (
+        <TicketDetailModal
+          ticket={selectedTicketDetail}
+          users={[]}
+          currentUserId={currentEmployee.id}
+          currentUserRole={currentEmployee.role}
+          currentUserName={currentEmployee.fullName}
+          onClose={() => setSelectedTicketDetail(null)}
+          onUpdateStatus={(ticketId, status, notes, resolution) => {
+            onUpdateTicketStatus(ticketId, status, notes, resolution);
+            setSelectedTicketDetail(null);
+          }}
+        />
       )}
 
     </div>

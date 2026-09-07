@@ -1,10 +1,13 @@
 import React, { useState } from "react";
 import { Client, Ticket, Notification, TicketCategory, TicketPriority, TicketStatus } from "../types";
-import { formatDate, formatDateTime } from "../utils";
+import HomeDashboard from "./HomeDashboard";
 import { 
-  Plus, MessageSquare, ClipboardCheck, Clock, CheckCircle2, ChevronRight, 
-  Search, ExternalLink, Send, ShieldCheck, Stars, Smile, MessageCircleHeart
+  Plus, MessageSquare, Clock, CheckCircle2,
+  ShieldCheck, LifeBuoy, Activity, AlertCircle, Send, LayoutDashboard, CalendarDays,
+  Calendar as CalendarIcon
 } from "lucide-react";
+import DeadlineCalendar from "./DeadlineCalendar";
+import { getDaysRemainingText, formatDate } from "../utils";
 
 interface ClientDashboardProps {
   activeClient: Client;
@@ -15,8 +18,10 @@ interface ClientDashboardProps {
     description: string;
     category: TicketCategory;
     priority: TicketPriority;
+    dueDate?: string;
   }) => void;
   onConfirmResolution: (ticketId: string, rating: number, notes?: string) => void;
+  onReopenTicket?: (ticketId: string) => void;
 }
 
 export default function ClientDashboard({
@@ -25,393 +30,389 @@ export default function ClientDashboard({
   notifications,
   onSubmitTicket,
   onConfirmResolution,
+  onReopenTicket,
 }: ClientDashboardProps) {
-  // Tabs: 'my_tickets' | 'submit_ticket'
-  const [activeTab, setActiveTab] = useState<"my_tickets" | "submit_ticket">("my_tickets");
+const [activeTab, setActiveTab] = useState<"dashboard" | "my_tickets" | "submit_ticket" | "calendar">("dashboard");
   
-  // Local Form state
+// Local Form state
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState<TicketCategory>("Technical Issue");
   const [priority, setPriority] = useState<TicketPriority>("Medium");
+  const [dueDate, setDueDate] = useState("");
 
-  // Selection state for viewing ticket timeline history
-  const [focusedTicketId, setFocusedTicketId] = useState<string | null>(null);
+  // Resolution state
+  const [resolvingTicketId, setResolvingTicketId] = useState<string | null>(null);
+  const [rating, setRating] = useState<number>(5);
+  const [resolutionNotes, setResolutionNotes] = useState("");
 
-  // Client confirmation states
-  const [confirmingTicketId, setConfirmingTicketId] = useState<string | null>(null);
-  const [satisfactionRating, setSatisfactionRating] = useState(5);
-  const [satisfactionReview, setSatisfactionNotes] = useState("");
-
-  // Filter tickets submitted by this corporate client
   const clientTickets = tickets.filter((t) => t.clientId === activeClient.id);
-  const focusedTicket = tickets.find((t) => t.id === focusedTicketId);
-
-  // Counters
-  const openCount = clientTickets.filter((t) => t.status !== "Closed" && t.status !== "Resolved").length;
-  const resolvedCount = clientTickets.filter((t) => t.status === "Resolved").length;
-  const closedCount = clientTickets.filter((t) => t.status === "Closed").length;
+  const openTicketsCount = clientTickets.filter((t) => t.status !== "Closed" && t.status !== "Resolved").length;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!subject || !description) return;
-    
-    onSubmitTicket({
-      subject,
-      description,
-      category,
-      priority,
-    });
-
-    // Reset Form & Switch back to list
+    onSubmitTicket({ subject, description, category, priority, dueDate: dueDate || undefined });
+    setActiveTab("my_tickets");
     setSubject("");
     setDescription("");
     setCategory("Technical Issue");
     setPriority("Medium");
-    setActiveTab("my_tickets");
+    setDueDate("");
   };
 
-  const handleConfirmSubmit = (e: React.FormEvent) => {
+  const handleConfirmResolution = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!confirmingTicketId) return;
+    if (resolvingTicketId) {
+      onConfirmResolution(resolvingTicketId, rating, resolutionNotes);
+      setResolvingTicketId(null);
+      setRating(5);
+      setResolutionNotes("");
+    }
+  };
 
-    onConfirmResolution(confirmingTicketId, satisfactionRating, satisfactionReview);
-
-    // Reset Form
-    setConfirmingTicketId(null);
-    setSatisfactionRating(5);
-    setSatisfactionNotes("");
+  // Helper to determine step in the process
+  const getTicketStep = (status: TicketStatus) => {
+    if (["Closed", "Resolved"].includes(status)) return 3;
+    if (["In Progress", "Pending"].includes(status)) return 2;
+    return 1;
   };
 
   return (
     <div className="space-y-6">
       
-      {/* Welcome banner */}
-      <div className="rounded-2xl border border-indigo-150 bg-indigo-50/30 p-5 flex flex-col justify-between sm:flex-row sm:items-center gap-4">
-        <div>
-          <span className="rounded bg-indigo-100 px-2.5 py-0.5 text-[9px] font-bold text-indigo-850 font-mono uppercase tracking-wide">
-            Corporate Client Portal
-          </span>
-          <h2 className="text-lg font-bold text-zinc-950 font-sans mt-1.5">
-            Welcome to helpdesk support: {activeClient.companyName}
-          </h2>
-          <p className="text-xs text-zinc-550 leading-relaxed max-w-xl">
-            Register support cases, monitor engineer resolution logs, and verify complete ticket closures.
-          </p>
-        </div>
-
-        {/* Counters widget */}
-        <div className="flex gap-4 text-xs font-semibold font-mono text-zinc-700 bg-white rounded-xl p-3 border border-zinc-150 self-start sm:self-center shadow-sm">
+      {/* 1. Premium Concierge Banner */}
+      <div className="rounded-2xl border border-zinc-800 bg-gradient-to-r from-zinc-950 to-zinc-900 p-6 sm:p-8 flex flex-col justify-between sm:flex-row sm:items-center gap-6 shadow-lg text-white">
+        <div className="flex items-center gap-5">
+          <div className="h-14 w-14 rounded-full bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+            <Building2Icon />
+          </div>
           <div>
-            <span className="block text-[8px] text-zinc-400 uppercase tracking-widest leading-none">Pending Cases</span>
-            <span className="block text-base font-extrabold text-zinc-950 mt-1">{openCount} active</span>
-          </div>
-          <div className="border-l border-zinc-200 pl-3">
-            <span className="block text-[8px] text-zinc-400 uppercase tracking-widest leading-none">Awaiting confirm</span>
-            <span className="block text-base font-extrabold text-indigo-600 mt-1">{resolvedCount} pending</span>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 font-mono">System Secure</span>
+            </div>
+            <h2 className="text-2xl font-bold font-sans tracking-tight">
+              Welcome, {activeClient.contactPerson.split(' ')[0]}
+            </h2>
+            <p className="text-sm text-zinc-400 mt-1">
+              {activeClient.companyName} Support Portal
+            </p>
           </div>
         </div>
-      </div>
 
-      {/* Nav Controls */}
-      <div className="flex gap-1.5 border-b border-zinc-150 pb-2.5">
         <button
-          onClick={() => {
-            setActiveTab("my_tickets");
-            setFocusedTicketId(null);
-          }}
-          className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition uppercase duration-150 tracking-wider ${
-            activeTab === "my_tickets" ? "bg-zinc-950 text-white" : "text-zinc-500 hover:bg-zinc-50"
-          }`}
+          onClick={() => setActiveTab("submit_ticket")}
+          className="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-xl font-bold transition-all shadow-[0_0_20px_rgba(79,70,229,0.3)] hover:shadow-[0_0_25px_rgba(79,70,229,0.5)]"
         >
-          My Support Cases ({clientTickets.length})
-        </button>
-        <button
-          onClick={() => {
-            setActiveTab("submit_ticket");
-            setFocusedTicketId(null);
-          }}
-          className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition uppercase duration-150 tracking-wider flex items-center gap-1.5 ${
-            activeTab === "submit_ticket" ? "bg-zinc-950 text-white" : "text-zinc-500 hover:bg-zinc-50"
-          }`}
-        >
-          <Plus className="h-4 w-4" />
-          <span>file new ticket</span>
+          <LifeBuoy size={18} />
+          Request Support
         </button>
       </div>
 
-      {/* MY TICKETS TABLE PANEL */}
+      {/* 2. Simplified Navigation */}
+      <div className="flex gap-1.5 rounded-xl bg-zinc-100 p-1 w-max">
+        <button
+          onClick={() => setActiveTab("dashboard")}
+          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg transition duration-150 flex items-center gap-1.5 ${
+            activeTab === "dashboard" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+          }`}
+        >
+          <LayoutDashboard size={14} />
+          Dashboard
+        </button>
+        <button
+          onClick={() => setActiveTab("my_tickets")}
+          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg transition duration-150 ${
+            activeTab === "my_tickets" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+          }`}
+        >
+          Active Issues ({openTicketsCount})
+        </button>
+        <button
+          onClick={() => setActiveTab("submit_ticket")}
+          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg transition duration-150 ${
+            activeTab === "submit_ticket" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+          }`}
+        >
+          New Request
+        </button>
+        <button
+          onClick={() => setActiveTab("calendar")}
+          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg transition duration-150 flex items-center gap-1.5 ${
+            activeTab === "calendar" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+          }`}
+        >
+          <CalendarIcon size={14} />
+          Deadlines Calendar
+        </button>
+      </div>
+
+      {/* Dashboard Overview */}
+      {activeTab === "dashboard" && (
+        <HomeDashboard
+          clients={[activeClient]}
+          tickets={tickets}
+          users={[]}
+          tasks={[]}
+        />
+      )}
+
+      {/* 3. MY TICKETS (Live Status Trackers) */}
       {activeTab === "my_tickets" && (
-        <div className="grid gap-6 lg:grid-cols-3 items-start animate-in fade-in duration-200 text-xs">
-          
-          {/* Left panel: tickets grid lists */}
-          <div className="lg:col-span-2 space-y-3.5">
-            {clientTickets.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-zinc-200 p-8 text-center text-zinc-400 font-sans">
-                No tickets have been registered for your company profile. Click 'Submit Ticket' to start.
-              </div>
-            ) : (
-              clientTickets.map((ticket) => {
-                const isFocused = focusedTicketId === ticket.id;
-                return (
-                  <button
-                    key={ticket.id}
-                    onClick={() => {
-                      setFocusedTicketId(ticket.id);
-                      setConfirmingTicketId(null);
-                    }}
-                    className={`w-full text-left p-4.5 rounded-2xl border bg-white shadow-sm hover:shadow-md transition text-xs space-y-3 flex flex-col justify-between ${
-                      isFocused ? "border-indigo-600 bg-indigo-50/5" : "border-zinc-200"
-                    }`}
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
-                        <span className="font-bold text-zinc-800">{ticket.id}</span>
-                        <span>Filed: {formatDate(ticket.createdDate)}</span>
+        <div className="space-y-4 animate-in fade-in duration-300">
+          {clientTickets.length === 0 ? (
+            <div className="rounded-2xl border border-zinc-200 bg-white p-12 text-center shadow-sm">
+              <ShieldCheck className="mx-auto h-12 w-12 text-zinc-300 mb-4" />
+              <h3 className="text-lg font-bold text-zinc-900">All systems operational</h3>
+              <p className="text-sm text-zinc-500 mt-2 max-w-sm mx-auto">You currently have no active support requests. If you experience any issues, our team is ready to help.</p>
+            </div>
+          ) : (
+            clientTickets.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).map((ticket) => {
+              const step = getTicketStep(ticket.status);
+              const isResolved = ticket.status === "Resolved";
+              const isClosed = ticket.status === "Closed";
+
+              return (
+                <div key={ticket.id} className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm hover:shadow-md transition">
+                  <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
+                    
+                    {/* Ticket Info */}
+                    <div className="space-y-3 flex-1">
+                      <div className="flex items-center gap-3 font-mono text-[11px] uppercase font-bold tracking-wider">
+                        <span className="text-zinc-900">ID: {ticket.id}</span>
+                        <span className="text-zinc-300">|</span>
+                        <span className="text-zinc-500">{formatDate(ticket.createdDate)}</span>
+                        <span className="text-zinc-300">|</span>
+                        <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">{ticket.category}</span>
                       </div>
                       
-                      <h4 className="font-extrabold text-zinc-950 font-sans text-xs">{ticket.subject}</h4>
-                      <p className="text-[11px] text-zinc-500 leading-normal line-clamp-2">{ticket.description}</p>
+                      <h4 className="text-lg font-bold text-zinc-900">{ticket.subject}</h4>
+                      <p className="text-sm text-zinc-600 leading-relaxed max-w-3xl">{ticket.description}</p>
                     </div>
 
-                    <div className="pt-2 border-t border-zinc-100 flex items-center justify-between gap-3 font-mono text-[9px] font-bold uppercase">
-                      <div className="flex items-center gap-2">
-                        <span className="rounded bg-sky-50 px-1.5 py-0.2 text-sky-850">{ticket.category}</span>
-                        <span className={`rounded px-1.5 py-0.2 ${
-                          ticket.priority === "Critical" ? "bg-red-50 text-red-800" : "bg-zinc-100 text-zinc-650"
-                        }`}>{ticket.priority} Urgency</span>
-                      </div>
-
-                      <span className={`rounded-xl px-2 py-0.5 ${
-                        ticket.status === "Resolved" ? "bg-indigo-600 text-white animate-pulse" :
-                        ticket.status === "Closed" ? "bg-emerald-50 text-emerald-800" :
-                        "bg-zinc-100 text-zinc-700"
-                      }`}>
-                        {ticket.status === "Resolved" ? "Awaiting Confirm" : ticket.status}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-
-          {/* Right panel: Focused Ticket Timeline History logs */}
-          <div className="bg-zinc-50 rounded-2xl p-5 border border-zinc-200 space-y-4">
-            {focusedTicket ? (
-              <div className="space-y-4">
-                <div className="border-b border-zinc-200 pb-3">
-                  <span className="font-mono text-[10px] font-bold text-zinc-400">DETAIL STATUS REPORT</span>
-                  <h3 className="text-xs font-bold text-zinc-950 font-sans leading-snug mt-1">{focusedTicket.subject}</h3>
-                  <div className="mt-2 text-[10px] text-zinc-500">
-                    Category: {focusedTicket.category} · Priority: {focusedTicket.priority} · ID: {focusedTicket.id}
-                  </div>
-                </div>
-
-                {/* If resolved, show active Confirmation trigger option */}
-                {focusedTicket.status === "Resolved" && (
-                  <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 space-y-2">
-                    <p className="font-bold text-indigo-850 flex items-center gap-1.5">
-                      <MessageCircleHeart className="h-4.5 w-4.5" />
-                      <span>Support Case Resolved</span>
-                    </p>
-                    <p className="text-[11px] text-zinc-600 leading-normal">
-                      David Kim has resolved this issue! Please review and confirm below.
-                    </p>
-
-                    <button
-                      onClick={() => setConfirmingTicketId(focusedTicket.id)}
-                      className="w-full rounded-lg bg-indigo-600 px-3 py-1.5 text-center font-bold text-white text-xs hover:bg-indigo-700 transition"
-                    >
-                      Confirm Resolution & Close Case
-                    </button>
-                  </div>
-                )}
-
-                {/* Confirm satisfaction review block in timeline */}
-                {confirmingTicketId === focusedTicket.id && (
-                  <form onSubmit={handleConfirmSubmit} className="rounded-xl border border-zinc-200 bg-white p-4 space-y-3">
-                    <h5 className="font-bold text-zinc-900 border-b border-zinc-100 pb-2">Rate Support Quality</h5>
-                    
-                    <div>
-                      <label className="block text-[10px] font-medium text-zinc-500 mb-1">Satisfaction Score</label>
-                      <div className="flex gap-1.5 pt-0.5">
-                        {[1, 2, 3, 4, 5].map((star) => (
-                          <button
-                            key={star}
-                            type="button"
-                            onClick={() => setSatisfactionRating(star)}
-                            className="text-amber-500 font-bold focus:outline-none"
+                    {/* Action Area (If Resolved) */}
+                    {isResolved && (
+                      <div className="shrink-0 bg-emerald-50 rounded-xl p-4 border border-emerald-100 sm:w-64 space-y-2">
+                        <p className="text-xs font-bold text-emerald-800 mb-2 flex items-center gap-1.5">
+                          <CheckCircle2 size={14} /> Issue Resolved
+                        </p>
+                        <p className="text-xs text-emerald-700 mb-3 italic">"{ticket.resolutionSummary}"</p>
+                        <button 
+                          onClick={() => setResolvingTicketId(ticket.id)}
+                          className="w-full rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 transition"
+                        >
+                          Confirm & Close Ticket
+                        </button>
+                        {onReopenTicket && (
+                          <button 
+                            onClick={() => onReopenTicket(ticket.id)}
+                            className="w-full rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 transition"
                           >
-                            <Stars className={`h-5 w-5 ${satisfactionRating >= star ? "fill-amber-500" : "text-zinc-300"}`} />
+                            Reopen Issue
                           </button>
-                        ))}
+                        )}
                       </div>
-                    </div>
+                    )}
 
-                    <div>
-                      <label className="block text-[10px] font-medium text-zinc-500 mb-1">Review Feedback (Optional)</label>
-                      <textarea
-                        rows={2}
-                        value={satisfactionReview}
-                        onChange={(e) => setSatisfactionNotes(e.target.value)}
-                        placeholder="Write support quality review..."
-                        className="w-full rounded-lg border border-zinc-200 px-2 py-1 text-xs"
-                      />
-                    </div>
-
-                    <div className="flex justify-end gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => setConfirmingTicketId(null)}
-                        className="rounded bg-zinc-100 px-2.5 py-1 text-[10px] font-semibold text-zinc-600"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        className="rounded bg-emerald-600 px-3 py-1 text-[10px] font-bold text-white hover:bg-emerald-700"
-                      >
-                        File Closure Rate
-                      </button>
-                    </div>
-                  </form>
-                )}
-
-                {/* Resolution Summary if Closed or Resolved */}
-                {focusedTicket.resolutionSummary && (
-                  <div className="bg-white rounded-xl p-3.5 border border-zinc-150 space-y-1">
-                    <span className="block text-[9px] uppercase tracking-wider text-zinc-400 font-mono">Formal Resolution Brief</span>
-                    <p className="font-semibold text-zinc-800 leading-normal">{focusedTicket.resolutionSummary}</p>
-                    {focusedTicket.satisfactionRating && (
-                      <div className="pt-2 text-amber-600 font-mono font-bold flex items-center gap-1 border-t border-zinc-100 mt-2">
-                        <Smile className="h-4 w-4" />
-                        <span>Closed with Rating: {'★'.repeat(focusedTicket.satisfactionRating)}</span>
+                    {isClosed && (
+                      <div className="shrink-0 text-right space-y-2">
+                         <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-3 py-1 text-xs font-bold text-zinc-600">
+                           <CheckCircle2 size={14} /> Closed
+                         </span>
+                         {onReopenTicket && (
+                           <div>
+                             <button
+                               onClick={() => onReopenTicket(ticket.id)}
+                               className="rounded-lg border border-zinc-300 bg-white px-3 py-1 text-xs font-bold text-zinc-700 hover:bg-zinc-50 transition"
+                             >
+                               Reopen Ticket
+                             </button>
+                           </div>
+                         )}
                       </div>
                     )}
                   </div>
-                )}
 
-                {/* Interactive Lifecycle Timeline list */}
-                <div className="space-y-4 pt-2">
-                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 font-mono">
-                    Activity & Transition History
-                  </h4>
-                  
-                  <div className="relative pl-3 border-l-2 border-zinc-200 space-y-4">
-                    {focusedTicket.history.map((h, i) => (
-                      <div key={i} className="relative">
-                        <div className="absolute -left-[17px] top-1 h-2.5 w-2.5 rounded-full border border-white bg-zinc-950"></div>
-                        <div className="space-y-0.5">
-                          <span className="block font-mono text-[9px] text-zinc-400">{formatDateTime(h.timestamp)}</span>
-                          <p className="font-semibold text-zinc-900">
-                            Status changed to <span className="font-extrabold uppercase text-[10px]">[{h.status}]</span>
-                          </p>
-                          <p className="text-zinc-600 text-[10.5px] leading-relaxed">{h.comment}</p>
+                  {/* Visual Status Tracker Bar (Only show if not closed) */}
+                  {!isClosed && !isResolved && (
+                    <div className="mt-8 pt-6 border-t border-zinc-100">
+                      <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-zinc-400 relative">
+                        {/* Background Line */}
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-1 bg-zinc-100 rounded-full z-0"></div>
+                        {/* Active Line */}
+                        <div className={`absolute left-0 top-1/2 -translate-y-1/2 h-1 bg-indigo-500 rounded-full z-0 transition-all duration-500 ${step === 1 ? 'w-0' : step === 2 ? 'w-1/2' : 'w-full'}`}></div>
+
+                        <div className={`flex flex-col items-center gap-2 z-10 bg-white px-2 ${step >= 1 ? 'text-indigo-600' : ''}`}>
+                          <div className={`h-4 w-4 rounded-full border-2 ${step >= 1 ? 'border-indigo-500 bg-white' : 'border-zinc-200 bg-zinc-100'}`}></div>
+                          <span>Submitted</span>
+                        </div>
+                        <div className={`flex flex-col items-center gap-2 z-10 bg-white px-2 ${step >= 2 ? 'text-indigo-600' : ''}`}>
+                          <div className={`h-4 w-4 rounded-full border-2 ${step >= 2 ? 'border-indigo-500 bg-white' : 'border-zinc-200 bg-zinc-100'}`}></div>
+                          <span>In Progress</span>
+                        </div>
+                        <div className={`flex flex-col items-center gap-2 z-10 bg-white px-2 ${step >= 3 ? 'text-emerald-500' : ''}`}>
+                          <div className={`h-4 w-4 rounded-full border-2 ${step >= 3 ? 'border-emerald-500 bg-white' : 'border-zinc-200 bg-zinc-100'}`}></div>
+                          <span>Resolved</span>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  )}
                 </div>
-
-              </div>
-            ) : (
-              <p className="py-16 text-center text-zinc-400">Select any ticket on the left to view active timelines and resolution parameters.</p>
-            )}
-          </div>
-
+              );
+            })
+          )}
         </div>
       )}
 
-      {/* SUBMIT NEW PORTAL TICKET FORM PANEL */}
+      {/* 4. SUBMIT NEW TICKET (Frictionless Form) */}
       {activeTab === "submit_ticket" && (
-        <div className="max-w-xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm animate-in fade-in duration-200 text-xs text-zinc-800">
-          <div className="border-b border-zinc-100 pb-3">
-            <h3 className="text-sm font-bold text-zinc-950 font-sans">File Helpdesk Ticket</h3>
-            <p className="text-xs text-zinc-400 mt-0.5 leading-normal">
-              Register technical issues, billing inquiries, or account locks. Your workspace coordinator will prioritize immediately.
-            </p>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-3xl">
+          <div className="mb-8">
+            <h3 className="text-xl font-bold text-zinc-900">How can we help?</h3>
+            <p className="text-sm text-zinc-500 mt-1">Please provide the details of your issue and our team will investigate immediately.</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-            <div>
-              <label className="block font-semibold text-zinc-700 mb-1">Subject Brief *</label>
-              <input
-                type="text"
-                required
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g. Broken links on shopping dashboard"
-                className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-zinc-805"
-              />
-            </div>
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="col-span-1 md:col-span-2">
+                <label className="block text-sm font-bold text-zinc-700 mb-2">Brief Subject</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g., Cannot access compliance module 3"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition"
+                />
+              </div>
 
-            <div>
-              <label className="block font-semibold text-zinc-700 mb-1">Detailed Case Narrative *</label>
-              <textarea
-                required
-                rows={4}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Please describe technical diagnostics, socket logs, or browser specs..."
-                className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-zinc-805 focus:outline-none"
-              />
-            </div>
+              <div className="col-span-1 md:col-span-2">
+                <label className="block text-sm font-bold text-zinc-700 mb-2">Detailed Description</label>
+                <textarea
+                  required
+                  rows={4}
+                  placeholder="Please describe what you were trying to do, and any error messages you received..."
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition"
+                />
+              </div>
 
-            <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block font-semibold text-zinc-700 mb-1">Issue Category Type</label>
+                <label className="block text-sm font-bold text-zinc-700 mb-2">Issue Category</label>
                 <select
                   value={category}
                   onChange={(e) => setCategory(e.target.value as TicketCategory)}
-                  className="w-full rounded-lg border border-zinc-200 bg-white px-2.5 py-2 focus:outline-none"
+                  className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition"
                 >
-                  <option value="Technical Issue">Technical Issue</option>
-                  <option value="Account Issue">Account Issue</option>
-                  <option value="Billing Issue">Billing Issue</option>
-                  <option value="Service Request">Service Request</option>
+                  <option value="Technical Issue">Technical / Platform Issue</option>
+                  <option value="Account Issue">Account / Login Issue</option>
+                  <option value="Billing Issue">Billing / Invoice Inquiry</option>
+                  <option value="Service Request">New Service Request</option>
                   <option value="General Inquiry">General Inquiry</option>
                 </select>
               </div>
 
-              <div>
-                <label className="block font-semibold text-zinc-700 mb-1">SLA Urgency Level (Priority)</label>
+<div>
+                <label className="block text-sm font-bold text-zinc-700 mb-2">Business Impact (Urgency)</label>
                 <select
                   value={priority}
                   onChange={(e) => setPriority(e.target.value as TicketPriority)}
-                  className="w-full rounded-lg border border-zinc-200 bg-white px-2.5 py-2 font-semibold focus:outline-none"
+                  className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition"
                 >
-                  <option value="Low">Low</option>
-                  <option value="Medium">Medium</option>
-                  <option value="High">High</option>
-                  <option value="Critical">Critical</option>
+                  <option value="Low">Low - Minor inconvenience</option>
+                  <option value="Medium">Medium - Normal workflow affected</option>
+                  <option value="High">High - Significant business blockage</option>
+                  <option value="Critical">Critical - System down / Urgent</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-zinc-700 mb-2">Target Due Date</label>
+                <div className="relative">
+                  <CalendarDays className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
+                  <input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                    className="w-full rounded-xl border border-zinc-200 bg-zinc-50 pl-10 pr-4 py-3 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition"
+                  />
+                </div>
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-3 pt-4 border-t border-zinc-100 mt-6">
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveTab("my_tickets");
-                  setSubject("");
-                  setDescription("");
-                }}
-                className="rounded-lg border border-zinc-200 bg-white px-4 py-2 font-semibold text-zinc-650"
-              >
-                Cancel
-              </button>
+            <div className="pt-6 border-t border-zinc-100 flex justify-end">
               <button
                 type="submit"
-                className="rounded-lg bg-indigo-650 px-4 py-2 font-bold text-white transition hover:bg-indigo-750"
+                className="flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 font-bold text-white transition hover:bg-indigo-700 shadow-sm"
               >
-                File Support Ticket
+                <Send size={16} />
+                Submit Request
               </button>
             </div>
           </form>
         </div>
       )}
 
+      {/* 4. DEADLINES CALENDAR */}
+      {activeTab === "calendar" && (
+        <div className="space-y-6 animate-in fade-in duration-300">
+          <DeadlineCalendar
+            currentUserRole="Client"
+            currentUserId={activeClient.id}
+            currentUserName={activeClient.contactPerson}
+          />
+        </div>
+      )}
+
+      {/* RESOLUTION CONFIRMATION MODAL */}
+      {resolvingTicketId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-8 shadow-2xl">
+            <h3 className="text-xl font-bold text-zinc-900 flex items-center gap-2">
+              <CheckCircle2 className="text-emerald-500" /> Close Ticket
+            </h3>
+            <p className="text-sm text-zinc-500 mt-2 mb-6">Are you satisfied with the resolution provided by our team?</p>
+
+            <form onSubmit={handleConfirmResolution} className="space-y-5">
+              <div>
+                <label className="block text-sm font-bold text-zinc-700 mb-2">Satisfaction Rating (1-5)</label>
+                <input 
+                  type="range" min="1" max="5" value={rating} 
+                  onChange={(e) => setRating(Number(e.target.value))} 
+                  className="w-full accent-emerald-500" 
+                />
+                <div className="flex justify-between text-xs text-zinc-400 font-bold mt-1">
+                  <span>1 - Poor</span>
+                  <span className="text-emerald-600">{rating} Stars</span>
+                  <span>5 - Excellent</span>
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-bold text-zinc-700 mb-2">Feedback (Optional)</label>
+                <textarea 
+                  rows={2} value={resolutionNotes} onChange={(e) => setResolutionNotes(e.target.value)} 
+                  placeholder="Tell us how we did..."
+                  className="w-full rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20" 
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4">
+                <button type="button" onClick={() => setResolvingTicketId(null)} className="rounded-xl px-4 py-2.5 text-sm font-bold text-zinc-600 hover:bg-zinc-100">Cancel</button>
+                <button type="submit" className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 shadow-sm">Confirm Closure</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+// Quick helper component for the banner icon
+function Building2Icon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></svg>
   );
 }

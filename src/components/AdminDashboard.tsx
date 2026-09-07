@@ -1,10 +1,24 @@
-import React, { useState } from "react";
-import { User, Client, Ticket, Task, AuditLog, TicketPriority, TicketCategory, TaskCategory, TaskPriority } from "../types";
-import { createId, formatDateTime, formatDate } from "../utils";
+import React, { useState, useEffect, useMemo } from "react";
+import { User, Client, Ticket, Task, AuditLog, TicketPriority, TicketCategory, TaskCategory, TaskPriority, TaskStatus, TicketStatus, ReviewStatus, UserRole, UserStatus as SystemUserStatus, ClientStatus } from "../types";
+import { createId, formatDateTime, formatDate, getDaysRemainingBadge } from "../utils";
+import CreateClientModal from "./CreateClientModal";
+import EditClientModal from "./EditClientModal";
+import { apiFetch } from "../services/api";
 import { 
   Building2, UserPlus, Users, FileSignature, Target, ShieldAlert, BadgeInfo, Search, Filter, Plus,
-  Sparkles, CheckCircle2, ClipboardCheck, ArrowUpDown, ChevronRight, FileSpreadsheet, Eye, Save, Trash2, Clock
+  Sparkles, CheckCircle2, ClipboardCheck, ArrowUpDown, ChevronRight, FileSpreadsheet, Eye, Save, Trash2, Clock, Activity, HelpCircle, CheckSquare, LifeBuoy
 } from "lucide-react";
+import EmployeeProfileModal from "./EmployeeProfileModal";
+import TicketDetailModal from "./TicketDetailModal";
+import TaskDetailModal from "./TaskDetailModal";
+import TicketDashboard from "./TicketDashboard";
+import ReportsPanel from "./ReportsPanel";
+import AuditLogPanel from "./AuditLogPanel";
+import HomeDashboard from "./HomeDashboard";
+import DeadlineCalendar from "./DeadlineCalendar";
+import Pagination from "./Pagination";
+import EmptyState from "./EmptyState";
+
 
 interface AdminDashboardProps {
   systemUsers: User[];
@@ -12,12 +26,39 @@ interface AdminDashboardProps {
   tickets: Ticket[];
   tasks: Task[];
   auditLogs: AuditLog[];
-  onAddClient: (newClient: Omit<Client, "id" | "createdDate" | "updatedDate">) => void;
-  onUpdateClient: (id: string, updates: Partial<Client>) => void;
+  onAddClient: (
+  client: Omit<
+    Client,
+    "id" | "createdDate" | "updatedDate"
+  >
+) => void;
+  onUpdateClient: (id: string, updates: Partial<Client>) => Promise<any> | void;
+  onDeleteClient: (id: string) => void;
   onAddEmployee: (newUser: Omit<User, "id" | "createdDate" | "updatedDate" | "passwordHash">) => void;
   onUpdateEmployee: (id: string, updates: Partial<User>) => void;
+  onDeleteEmployee: (id: string) => void;
   onAssignTicket: (ticketId: string, employeeId: string | null, priority?: TicketPriority) => void;
   onAssignTask: (newTask: Omit<Task, "id" | "createdDate" | "updatedDate" | "escalationStatus" | "assignedBy">) => void;
+  
+  onDeleteTicket: (ticketId: string) => void;
+  onUpdateTicketStatus?: (
+    ticketId: string,
+    status: TicketStatus,
+    notes?: string,
+    resolution?: string
+  ) => void;
+  onUpdateTaskStatus: (
+  taskId: string,
+  status: TaskStatus,
+  notes?: string
+) => void;
+  onDeleteTask: (taskId: string) => void;
+  onUpdateTaskProgress: (taskId: string, progressPercentage: number, comment: string) => void;
+  onReviewTask: (taskId: string, reviewStatus: ReviewStatus, managerNotes: string) => void;
+  onBulkActionTickets: (action: 'assign' | 'updateStatus' | 'delete', ids: string[], payload?: any) => void;
+  onBulkActionTasks: (action: 'delete', ids: string[], payload?: any) => void;
+  onReopenTicket?: (ticketId: string) => void;
+  onReopenTask?: (taskId: string) => void;
 }
 
 export default function AdminDashboard({
@@ -28,33 +69,128 @@ export default function AdminDashboard({
   auditLogs,
   onAddClient,
   onUpdateClient,
+  onDeleteClient,
   onAddEmployee,
   onUpdateEmployee,
+  onDeleteEmployee,
   onAssignTicket,
+  onDeleteTicket,
   onAssignTask,
+  onDeleteTask,
+  onUpdateTaskStatus,
+  onUpdateTicketStatus,
+  onUpdateTaskProgress,
+  onReviewTask,
+  onBulkActionTickets,
+  onBulkActionTasks,
+  onReopenTicket,
+  onReopenTask,
 }: AdminDashboardProps) {
   // Tabs: 'clients' | 'employees' | 'tickets' | 'tasks' | 'dashboard'
-  const [activeTab, setActiveTab] = useState<"dashboard" | "clients" | "employees" | "tickets" | "tasks">("dashboard");
+const [activeTab, setActiveTab] = useState<
+  "dashboard" | "clients" | "employees" | "tickets" | "tasks" | "calendar" | "reports" | "audit"
+>(() => {
+  return (
+    (localStorage.getItem("activeTab") as
+      | "dashboard"
+      | "clients"
+      | "employees"
+      | "tickets"
+      | "tasks"
+      | "calendar"
+      | "reports"
+      | "audit") || "dashboard"
+  );
+});
 
-  // Filter/Search states
+// Filter/Search states
   const [clientSearch, setClientSearch] = useState("");
   const [clientStatusFilter, setClientStatusFilter] = useState("all");
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [ticketStatusFilter, setTicketStatusFilter] = useState("all");
   const [taskStatusFilter, setTaskStatusFilter] = useState("all");
 
+  // --- Phase 10: Pagination state ---
+  const [clientPage, setClientPage] = useState(1);
+  const [clientPageSize, setClientPageSize] = useState(10);
+  const [ticketPage, setTicketPage] = useState(1);
+  const [ticketPageSize, setTicketPageSize] = useState(10);
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskPageSize, setTaskPageSize] = useState(10);
+
+  // Reset to first page whenever filters/search change
+  useEffect(() => {
+    setClientPage(1);
+  }, [clientSearch, clientStatusFilter]);
+  useEffect(() => {
+    setTicketPage(1);
+  }, [ticketStatusFilter]);
+  useEffect(() => {
+    setTaskPage(1);
+  }, [taskStatusFilter]);
+
+  // --- Phase 5: Dashboard Metrics ---
+  const totalEmployees = systemUsers.length;
+  const totalClients = clients.length;
+  const openTickets = tickets.filter((t) => ["New", "Assigned", "In Progress", "Pending"].includes(t.status)).length;
+  const pendingTasks = tasks.filter((t) => t.status !== "Completed" && ["Pending", "Assigned", "In Progress", "Overdue", "Escalated"].includes(t.status)).length;
+
   // Selection / Modal States for Create forms
   const [showClientModal, setShowClientModal] = useState(false);
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
+  const [selectedTaskDetail, setSelectedTaskDetail] = useState<Task | null>(null);
   const [viewingHistoryClient, setViewingHistoryClient] = useState<Client | null>(null);
+  const [editingClient, setEditingClient] = useState<Client | null>(null);
 
-  // Form Fields
-  const [newClientName, setNewClientName] = useState("");
-  const [newClientContact, setNewClientContact] = useState("");
-  const [newClientEmail, setNewClientEmail] = useState("");
-  const [newClientPhone, setNewClientPhone] = useState("");
-  const [newClientStatus, setNewClientStatus] = useState<Client["status"]>("Active");
+  const [editingEmployee, setEditingEmployee] = useState<User | null>(null);
+  const [selectedEmployee, setSelectedEmployee] = useState<User | null>(null);
+  const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
+
+
+  const [employeeToResetPassword, setEmployeeToResetPassword] = useState<User | null>(null);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+  const [resetPasswordError, setResetPasswordError] = useState<string | null>(null);
+
+  const [editEmpForm, setEditEmpForm] = useState({
+    fullName: "",
+    email: "",
+    role: "Employee" as UserRole,
+    department: "",
+    managerId: null as string | null,
+    status: "Active" as SystemUserStatus,
+  });
+
+  useEffect(() => {
+    if (editingEmployee) {
+      setEditEmpForm({
+        fullName: editingEmployee.fullName,
+        email: editingEmployee.email,
+        role: editingEmployee.role,
+        department: editingEmployee.department,
+        managerId: editingEmployee.managerId,
+        status: editingEmployee.status,
+      });
+    }
+  }, [editingEmployee]);
+
+  // Sync selectedEmployee with the main list to prevent stale data in the modal
+  useEffect(() => {
+    if (selectedEmployee) {
+      const updatedEmployee = systemUsers.find(u => u.id === selectedEmployee.id);
+      if (updatedEmployee && JSON.stringify(updatedEmployee) !== JSON.stringify(selectedEmployee)) {
+        setSelectedEmployee(updatedEmployee);
+      }
+    }
+  }, [systemUsers, selectedEmployee]);
+
+  const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+
+  // --- Phase 9: Bulk Actions State ---
+  const [selectedTicketIds, setSelectedTicketIds] = useState<string[]>([]);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [bulkAssignee, setBulkAssignee] = useState("");
+  const [bulkAction, setBulkAction] = useState<"assign" | "close" | "delete" | "export" | "">("");
 
   const [newEmpName, setNewEmpName] = useState("");
   const [newEmpEmail, setNewEmpEmail] = useState("");
@@ -63,32 +199,13 @@ export default function AdminDashboard({
   const [newEmpMgr, setNewEmpMgr] = useState("");
   const [newEmpStatus, setNewEmpStatus] = useState<User["status"]>("Active");
 
-  const [newTaskTitle, setNewTaskTitle] = useState("");
+const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskDesc, setNewTaskDesc] = useState("");
   const [newTaskCategory, setNewTaskCategory] = useState<TaskCategory>("Operational");
   const [newTaskAssignedTo, setNewTaskAssignedTo] = useState("");
+  const [newTaskStartDate, setNewTaskStartDate] = useState("");
   const [newTaskDueDate, setNewTaskDueDate] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>("Medium");
-
-  // Form Submission Handlers
-  const handleCreateClient = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newClientName || !newClientContact || !newClientEmail) return;
-    onAddClient({
-      companyName: newClientName,
-      contactPerson: newClientContact,
-      email: newClientEmail,
-      phoneNumber: newClientPhone || "+1 (555) 000-0000",
-      status: newClientStatus,
-    });
-    // Reset Form
-    setNewClientName("");
-    setNewClientContact("");
-    setNewClientEmail("");
-    setNewClientPhone("");
-    setNewClientStatus("Active");
-    setShowClientModal(false);
-  };
 
   const handleCreateEmployee = (e: React.FormEvent) => {
     e.preventDefault();
@@ -119,6 +236,7 @@ export default function AdminDashboard({
       description: newTaskDesc,
       taskCategory: newTaskCategory,
       assignedTo: newTaskAssignedTo,
+      startDate: newTaskStartDate || undefined,
       dueDate: newTaskDueDate,
       priority: newTaskPriority,
       status: "Assigned",
@@ -128,19 +246,99 @@ export default function AdminDashboard({
     setNewTaskDesc("");
     setNewTaskCategory("Operational");
     setNewTaskAssignedTo("");
+    setNewTaskStartDate("");
     setNewTaskDueDate("");
     setNewTaskPriority("Medium");
     setShowTaskModal(false);
   };
 
+  const handleConfirmResetPassword = async () => {
+    if (!employeeToResetPassword) return;
+
+    setIsResettingPassword(true);
+    setResetPasswordError(null);
+
+    try {
+      const result = await apiFetch(`/auth/admin-reset-password/${employeeToResetPassword.id}`, {
+        method: 'POST',
+      });
+      
+      alert(result.message || 'Password reset successfully. A temporary password has been sent to the employee\'s email.');
+      
+      setEmployeeToResetPassword(null);
+    } catch (error) {
+      setResetPasswordError(error instanceof Error ? error.message : 'An unknown error occurred while resetting the password.');
+    } finally {
+      setIsResettingPassword(false);
+    }
+  };
+
+  const handleEditFormChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+  ) => {
+    const { name, value } = e.target;
+    setEditEmpForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleUpdateEmployeeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingEmployee) return;
+
+    if (!editEmpForm.fullName.trim() || !editEmpForm.email.trim()) {
+      alert("Full Name and Email are required.");
+      return;
+    }
+    if (!/^\S+@\S+\.\S+$/.test(editEmpForm.email)) {
+      alert("Please enter a valid email address.");
+      return;
+    }
+
+    const updates: Partial<User> = {
+      fullName: editEmpForm.fullName,
+      email: editEmpForm.email,
+      role: editEmpForm.role,
+      department: editEmpForm.department,
+      managerId: editEmpForm.managerId || null,
+      status: editEmpForm.status,
+    };
+
+    onUpdateEmployee(editingEmployee.id, updates);
+    setEditingEmployee(null);
+  };
+
+  const selectedEmployeeCounts = useMemo(() => {
+    if (!selectedEmployee) return null;
+
+    const employeeTickets = tickets.filter((t) => t.assignedTo === selectedEmployee.id);
+    const employeeTasks = tasks.filter((tk) => tk.assignedTo === selectedEmployee.id);
+
+    const openTicketsCount = employeeTickets.filter((t) => t.status !== "Closed" && t.status !== "Resolved").length;
+    const completedTasksCount = employeeTasks.filter((tk) => tk.status === "Completed").length;
+    const assignedTasksCount = employeeTasks.filter((tk) => tk.status !== "Completed").length;
+
+    // Placeholder for projects; dataset not present in current model
+    const activeProjectsCount = 0;
+
+    return {
+      openTicketsCount,
+      completedTasksCount,
+      assignedTasksCount,
+      activeProjectsCount,
+    };
+  }, [selectedEmployee, tickets, tasks]);
+
   // Derived dashboard metrics
   const activeClientsCount = clients.filter((c) => c.status === "Active").length;
+  
+  // NOTE: The overview tab UI below uses the Phase 5 metrics:
+  // totalEmployees, totalClients, openTickets, pendingTasks, and recentActivity.
+
   const activeEmployeesCount = systemUsers.filter((u) => u.role === "Employee").length;
   const activeManagersCount = systemUsers.filter((u) => u.role === "Manager").length;
   const openTicketsCount = tickets.filter((t) => t.status !== "Closed" && t.status !== "Resolved").length;
   const resolvedTicketsCount = tickets.filter((t) => t.status === "Resolved" || t.status === "Closed").length;
   const escalatedTasksCount = tasks.filter((tk) => tk.status === "Escalated" || tk.escalationStatus === "Yes").length;
-  const overdueTasksCount = tasks.filter((tk) => tk.status === "Overdue" || (tk.status !== "Completed" && new Date(tk.dueDate) < new Date("2026-06-16"))).length;
+  const overdueTasksCount = tasks.filter((tk) => tk.isOverdue).length;
 
   // Filtered Client / Employee lists
   const filteredClients = clients.filter((c) => {
@@ -153,13 +351,30 @@ export default function AdminDashboard({
     return matchesSearch && matchesStatus;
   });
 
-  const filteredEmployees = systemUsers.filter((u) => {
+const filteredEmployees = systemUsers.filter((u) => {
     const matchesSearch = 
       u.fullName.toLowerCase().includes(employeeSearch.toLowerCase()) ||
       u.email.toLowerCase().includes(employeeSearch.toLowerCase()) ||
       u.department.toLowerCase().includes(employeeSearch.toLowerCase());
     return matchesSearch;
   });
+
+  // --- Phase 10: Paginated slices ---
+  const filteredTickets = tickets.filter((t) => ticketStatusFilter === "all" || t.status === ticketStatusFilter);
+  const filteredTasks = tasks.filter((tk) => taskStatusFilter === "all" || tk.status === taskStatusFilter);
+
+  const paginatedClients = filteredClients.slice(
+    (clientPage - 1) * clientPageSize,
+    clientPage * clientPageSize
+  );
+  const paginatedTickets = filteredTickets.slice(
+    (ticketPage - 1) * ticketPageSize,
+    ticketPage * ticketPageSize
+  );
+  const paginatedTasks = filteredTasks.slice(
+    (taskPage - 1) * taskPageSize,
+    taskPage * taskPageSize
+  );
 
   // Export report payload simulation helper
   const handleExportCSV = (reportName: string, dataObjList: any[]) => {
@@ -169,10 +384,78 @@ export default function AdminDashboard({
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `${reportName}_Compliance_Export_2026.csv`);
+link.setAttribute("download", `${reportName}_Compliance_Export_2026.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // ─── Phase 9: Bulk Actions ─────────────────────────────────────────────
+  const toggleTicketSelection = (id: string) => {
+    setSelectedTicketIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const toggleAllTickets = (ids: string[]) => {
+    setSelectedTicketIds((prev) =>
+      prev.length === ids.length ? [] : ids
+    );
+  };
+
+  const toggleTaskSelection = (id: string) => {
+    setSelectedTaskIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const toggleAllTasks = (ids: string[]) => {
+    setSelectedTaskIds((prev) =>
+      prev.length === ids.length ? [] : ids
+    );
+  };
+
+  const handleBulkTicketAction = (action: "assign" | "close" | "delete" | "export") => {
+    if (selectedTicketIds.length === 0) return;
+
+    if (action === "assign") {
+      if (!bulkAssignee) return; // Handled by App.tsx now
+      const terminalSelected = tickets.filter(
+        (t) => selectedTicketIds.includes(t.id) && (t.status === "Resolved" || t.status === "Closed")
+      );
+      if (terminalSelected.length > 0) {
+        alert("Closed or resolved tickets cannot be assigned. Please deselect terminal tickets or reopen them first.");
+        return;
+      }
+      onBulkActionTickets('assign', selectedTicketIds, { assigneeId: bulkAssignee });
+      setSelectedTicketIds([]);
+      setBulkAssignee("");
+    } else if (action === "close") {
+      onBulkActionTickets('updateStatus', selectedTicketIds, { status: 'Closed' });
+      setSelectedTicketIds([]);
+    } else if (action === "delete") {
+      onBulkActionTickets('delete', selectedTicketIds);
+      setSelectedTicketIds([]);
+    } else if (action === "export") {
+      const selected = tickets.filter((t) => selectedTicketIds.includes(t.id));
+      handleExportCSV("Selected_Tickets", selected);
+      setSelectedTicketIds([]);
+    }
+    setSelectedTicketIds([]); // Clear selection after action
+  };
+
+  const handleBulkTaskAction = (action: "delete" | "export") => {
+    if (selectedTaskIds.length === 0) return;
+
+    if (action === "delete") {
+      onBulkActionTasks('delete', selectedTaskIds);
+      setSelectedTaskIds([]);
+    } else if (action === "export") {
+      const selected = tasks.filter((t) => selectedTaskIds.includes(t.id));
+      handleExportCSV("Selected_Tasks", selected);
+      setSelectedTaskIds([]);
+    }
+    setSelectedTaskIds([]); // Clear selection after action
   };
 
   return (
@@ -191,7 +474,7 @@ export default function AdminDashboard({
         
         {/* Navigation Tabs */}
         <div className="flex flex-wrap gap-1 rounded-xl bg-zinc-100 p-1">
-          {(["dashboard", "clients", "employees", "tickets", "tasks"] as const).map((tab) => (
+          {(["dashboard", "clients", "employees", "tickets", "tasks", "calendar", "reports", "audit"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -207,229 +490,32 @@ export default function AdminDashboard({
         </div>
       </div>
 
-      {/* DASHBOARD TAB CONTAINER */}
+      {/* DASHBOARD TAB CONTAINER - Redesigned Home Dashboard */}
       {activeTab === "dashboard" && (
+        <HomeDashboard
+          clients={clients}
+          users={systemUsers}
+          tickets={tickets}
+          tasks={tasks}
+          onNavigate={(section) => {
+            // Map section names to tab names
+            if (section === "employees") setActiveTab("employees");
+            else if (section === "clients") setActiveTab("clients");
+            else if (section === "tickets") setActiveTab("tickets");
+            else if (section === "tasks") setActiveTab("tasks");
+            else if (section === "calendar") setActiveTab("calendar");
+          }}
+        />
+      )}
+
+      {/* DEADLINE CALENDAR TAB */}
+      {activeTab === "calendar" && (
         <div className="space-y-6 animate-in fade-in duration-200">
-          
-          {/* Quick Metrics KPI Bento Grid */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            
-            <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:shadow-md">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-widest text-zinc-400 font-mono">Organization Clients</span>
-                <span className="rounded-full bg-indigo-50 p-1.5 text-indigo-600"><Building2 className="h-4 w-4" /></span>
-              </div>
-              <div className="mt-4 flex items-baseline gap-2">
-                <span className="text-3xl font-extrabold tracking-tight text-zinc-950">{clients.length}</span>
-                <span className="text-xs text-zinc-500 font-mono">({activeClientsCount} active)</span>
-              </div>
-              <div className="mt-2 text-[10px] text-zinc-400">Total registered company files</div>
-            </div>
-
-            <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:shadow-md">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-widest text-zinc-400 font-mono">Assigned Operations Force</span>
-                <span className="rounded-full bg-emerald-50 p-1.5 text-emerald-600"><Users className="h-4 w-4" /></span>
-              </div>
-              <div className="mt-4 flex items-baseline gap-2">
-                <span className="text-3xl font-extrabold tracking-tight text-zinc-950">{systemUsers.length}</span>
-                <span className="text-xs text-zinc-500 font-mono">({activeEmployeesCount} staff)</span>
-              </div>
-              <div className="mt-2 text-[10px] text-zinc-400">Engineers, Admins & supervisors</div>
-            </div>
-
-            <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:shadow-md">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-widest text-zinc-400 font-mono">Backlog Open Tickets</span>
-                <span className="rounded-full bg-orange-50 p-1.5 text-orange-600"><BadgeInfo className="h-4 w-4" /></span>
-              </div>
-              <div className="mt-4 flex items-baseline gap-2">
-                <span className="text-3xl font-extrabold tracking-tight text-zinc-950">{openTicketsCount}</span>
-                <span className="text-xs text-emerald-600 font-mono">({resolvedTicketsCount} resolved)</span>
-              </div>
-              <div className="mt-2 text-[10px] text-zinc-400">SLA active pending cases</div>
-            </div>
-
-            <div className="rounded-2xl border border-red-200 bg-red-50/50 p-5 shadow-sm transition hover:shadow-md">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-widest text-red-600 font-mono">Escalations Outstanding</span>
-                <span className="rounded-full bg-red-100 p-1.5 text-red-600"><ShieldAlert className="h-4 w-4" /></span>
-              </div>
-              <div className="mt-4 flex items-baseline gap-2">
-                <span className="text-3xl font-extrabold tracking-tight text-red-800">{escalatedTasksCount}</span>
-                <span className="text-xs text-orange-700 font-mono">({overdueTasksCount} overdue)</span>
-              </div>
-              <div className="mt-2 text-[10px] text-red-500">Requires supervisor override</div>
-            </div>
-
-          </div>
-
-          {/* SLA Performance SVG Graphics Container */}
-          <div className="grid gap-6 lg:grid-cols-3">
-            
-            {/* Custom SVG Data Visualization Card */}
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm lg:col-span-2">
-              <div className="flex items-center justify-between border-b border-zinc-100 pb-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-zinc-900 font-sans">
-                    Support Ticket SLA Distribution & Urgencies
-                  </h3>
-                  <p className="text-xs text-zinc-400">Visual mapping of support categorizations and active urgencies.</p>
-                </div>
-                
-                <button
-                  onClick={() => handleExportCSV("support_analysis", tickets)}
-                  className="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100"
-                >
-                  <FileSpreadsheet className="h-3.5 w-3.5" />
-                  <span>SLA CSV</span>
-                </button>
-              </div>
-
-              {/* Graphic Plot using Raw SVG blocks */}
-              <div className="mt-6 flex flex-col gap-6 sm:flex-row sm:items-center">
-                
-                {/* SVG Radial Chart demonstrating ticket success */}
-                <div className="relative flex flex-col items-center justify-center shrink-0">
-                  <svg className="h-32 w-32" viewBox="0 0 36 36">
-                    <path
-                      className="text-zinc-100"
-                      strokeWidth="3.5"
-                      stroke="currentColor"
-                      fill="none"
-                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                    />
-                    <path
-                      className="text-indigo-600"
-                      strokeDasharray={`${Math.round((resolvedTicketsCount / tickets.length) * 100)}, 100`}
-                      strokeWidth="3.5"
-                      strokeLinecap="round"
-                      stroke="currentColor"
-                      fill="none"
-                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                    />
-                  </svg>
-                  <div className="absolute flex flex-col items-center justify-center text-center">
-                    <span className="text-xl font-bold text-zinc-900">
-                      {Math.round((resolvedTicketsCount / tickets.length) * 100)}%
-                    </span>
-                    <span className="text-[9px] uppercase tracking-wider text-zinc-400 font-mono">RESOLVED</span>
-                  </div>
-                </div>
-
-                {/* SVG Stacked Bar Charts representing Priorities */}
-                <div className="w-full space-y-3">
-                  {["Critical", "High", "Medium", "Low"].map((level) => {
-                    const count = tickets.filter((t) => t.priority === level).length;
-                    const pct = (count / tickets.length) * 100;
-                    const barColor = 
-                      level === "Critical" ? "bg-red-500" :
-                      level === "High" ? "bg-orange-500" :
-                      level === "Medium" ? "bg-indigo-500" : "bg-sky-500";
-                    return (
-                      <div key={level} className="space-y-1">
-                        <div className="flex items-center justify-between text-xs font-medium">
-                          <span className="text-zinc-600">{level} Urgency</span>
-                          <span className="text-zinc-900 font-mono">
-                            {count} ({Math.round(pct)}%)
-                          </span>
-                        </div>
-                        <div className="h-2 w-full rounded-full bg-zinc-100">
-                          <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }}></div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-              </div>
-            </div>
-
-            {/* Platform Quick Statistics Log Alerts */}
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-              <h3 className="text-sm font-semibold text-zinc-900 border-b border-zinc-100 pb-3">
-                SLA Compliance Guard
-              </h3>
-              <div className="mt-4 space-y-4">
-                
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 rounded bg-amber-50 p-1 text-amber-600">
-                    <Clock className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold text-zinc-800">Target Resolution Durations</p>
-                    <p className="text-[11px] text-zinc-500">Critical priority support tickets have strict 4-hour SLA limits before escalations trigger.</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 rounded bg-red-100 p-1 text-red-600">
-                    <ShieldAlert className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold text-zinc-800">Automatic Overdue Engine</p>
-                    <p className="text-[11px] text-zinc-500">Overdue tasks automatically mark supervisors with escalation logs in accordance with ISO audit protocols.</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 rounded bg-emerald-50 p-1 text-emerald-600">
-                    <CheckCircle2 className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold text-zinc-800">Direct Client Confirmation</p>
-                    <p className="text-[11px] text-zinc-500">Tickets are securely persisted and verified with custom customer feedback metrics upon resolution.</p>
-                  </div>
-                </div>
-
-              </div>
-            </div>
-
-          </div>
-
-          {/* Active Operational Audits Overview & Actions */}
-          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-4">
-              <div>
-                <h3 className="text-sm font-semibold text-zinc-900">Immediate Administrative Tasks</h3>
-                <p className="text-xs text-zinc-400">Outstanding actions required by administrative dispatchers.</p>
-              </div>
-              <button 
-                onClick={() => handleExportCSV("tasks_report", tasks)}
-                className="text-xs font-semibold text-indigo-600 hover:underline"
-              >
-                Export Task Workbook
-              </button>
-            </div>
-            
-            <div className="mt-4 divide-y divide-zinc-100 text-xs">
-              {tasks.slice(0, 4).map((task) => (
-                <div key={task.id} className="flex items-center justify-between py-3">
-                  <div className="flex items-center gap-3">
-                    <span className={`inline-block rounded px-2 py-0.5 text-[10px] font-bold font-mono uppercase ${
-                      task.priority === "Critical" ? "bg-red-100 text-red-800" :
-                      task.priority === "High" ? "bg-orange-100 text-orange-850" :
-                      task.priority === "Medium" ? "bg-indigo-100 text-indigo-800" : "bg-zinc-100 text-zinc-800"
-                    }`}>
-                      {task.priority}
-                    </span>
-                    <div>
-                      <p className="font-semibold text-zinc-900">{task.title}</p>
-                      <p className="text-[10px] text-zinc-400">Category: {task.taskCategory} · Due: {formatDate(task.dueDate)}</p>
-                    </div>
-                  </div>
-                  <span className={`rounded-xl px-2 py-0.5 text-[10px] font-bold font-mono ${
-                    task.status === "Completed" ? "bg-emerald-50 text-emerald-700" :
-                    task.status === "Escalated" ? "bg-red-100 text-red-800 animate-pulse" :
-                    task.status === "Overdue" ? "bg-orange-100 text-orange-800" : "bg-sky-50 text-sky-800"
-                  }`}>
-                    {task.status}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
+          <DeadlineCalendar
+            currentUserRole="Administrator"
+            currentUserId="U-1"
+            currentUserName="Administrator"
+          />
         </div>
       )}
 
@@ -495,14 +581,17 @@ export default function AdminDashboard({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200 text-zinc-700">
-                  {filteredClients.length === 0 ? (
+{filteredClients.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-6 py-10 text-center text-zinc-400">
-                        No clients match the specified filters. Try adjusting search queries.
+                        <EmptyState
+                          title="No clients found"
+                          message="No clients match the specified filters. Try adjusting search queries."
+                        />
                       </td>
                     </tr>
-                  ) : (
-                    filteredClients.map((client) => (
+) : (
+                    paginatedClients.map((client) => (
                       <tr key={client.id} className="hover:bg-zinc-50/70 transition">
                         <td className="px-6 py-4 font-mono font-bold text-zinc-950">{client.id}</td>
                         <td className="px-6 py-4 font-semibold text-zinc-950">{client.companyName}</td>
@@ -520,6 +609,13 @@ export default function AdminDashboard({
                         <td className="px-6 py-4 text-zinc-500">{formatDate(client.createdDate)}</td>
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2.5">
+                            {/* Edit Client Button */}
+                            <button
+                              onClick={() => setEditingClient(client)}
+                              className="rounded px-2 py-1 text-[10px] font-semibold text-indigo-600 transition hover:bg-indigo-50"
+                            >
+                              Edit
+                            </button>
                             
                             {/* Toggle Activation Actions */}
                             {client.status === "Active" ? (
@@ -537,7 +633,16 @@ export default function AdminDashboard({
                                 Activate
                               </button>
                             )}
-
+                            <button
+                              onClick={() => {
+                                if (window.confirm(`Delete ${client.companyName}?`)) {
+                                  onDeleteClient(client.id);
+                                }
+                              }}
+                              className="rounded px-2 py-1 text-[10px] font-semibold text-red-600 transition hover:bg-red-50"
+                            >
+                              Delete
+                            </button>
                             <button
                               onClick={() => setViewingHistoryClient(client)}
                               className="inline-flex items-center gap-1 rounded border border-zinc-200 bg-white px-2 py-1 text-[10px] font-semibold text-zinc-700 transition hover:bg-zinc-50 shadow-sm"
@@ -551,10 +656,24 @@ export default function AdminDashboard({
                       </tr>
                     ))
                   )}
-                </tbody>
+</tbody>
               </table>
             </div>
           </div>
+
+          {/* Client Pagination */}
+          {filteredClients.length > 0 && (
+            <Pagination
+              page={clientPage}
+              pageSize={clientPageSize}
+              totalItems={filteredClients.length}
+              onPageChange={setClientPage}
+              onPageSizeChange={(size) => {
+                setClientPageSize(size);
+                setClientPage(1);
+              }}
+            />
+          )}
 
           {/* Collapsible Detail Sheet: Client History View */}
           {viewingHistoryClient && (
@@ -644,97 +763,20 @@ export default function AdminDashboard({
             </div>
           )}
 
-          {/* CREATE CLIENT MODAL SHEET */}
-          {showClientModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-              <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl animate-in zoom-in-95 duration-150">
-                <h3 className="text-base font-bold text-zinc-900 font-sans">
-                  Provision New Client Profile
-                </h3>
-                <p className="text-xs text-zinc-400 mt-1 pb-3 border-b border-zinc-100 leading-normal">
-                  Create a secure corporate portal account. Logins are generated synchronously.
-                </p>
+          {/* Edit Client Modal */}
+          <EditClientModal
+            client={editingClient}
+            isOpen={!!editingClient}
+            onClose={() => setEditingClient(null)}
+            onUpdateClient={onUpdateClient}
+          />
 
-                <form onSubmit={handleCreateClient} className="mt-4 space-y-3 text-xs">
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Company Name *</label>
-                    <input
-                      type="text"
-                      required
-                      value={newClientName}
-                      onChange={(e) => setNewClientName(e.target.value)}
-                      placeholder="e.g. InnoTech Ltd"
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 focus:border-zinc-900 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Contact Person Name *</label>
-                    <input
-                      type="text"
-                      required
-                      value={newClientContact}
-                      onChange={(e) => setNewClientContact(e.target.value)}
-                      placeholder="e.g. Johnathan Finch"
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 focus:border-zinc-900 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Representative Email *</label>
-                    <input
-                      type="email"
-                      required
-                      value={newClientEmail}
-                      onChange={(e) => setNewClientEmail(e.target.value)}
-                      placeholder="e.g. finch@innotech.com"
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 focus:border-zinc-900 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Phone Number</label>
-                    <input
-                      type="text"
-                      value={newClientPhone}
-                      onChange={(e) => setNewClientPhone(e.target.value)}
-                      placeholder="e.g. +1 (555) 441-2299"
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 focus:border-zinc-900 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-zinc-700 mb-1">Active Status Setup</label>
-                    <select
-                      value={newClientStatus}
-                      onChange={(e) => setNewClientStatus(e.target.value as Client["status"])}
-                      className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 focus:outline-none"
-                    >
-                      <option value="Active">Active</option>
-                      <option value="Pending Activation">Pending Activation</option>
-                      <option value="Suspended">Suspended</option>
-                    </select>
-                  </div>
-
-                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-zinc-100 mt-5">
-                    <button
-                      type="button"
-                      onClick={() => setShowClientModal(false)}
-                      className="rounded-lg border border-zinc-200 bg-white px-4 py-2 font-semibold text-zinc-650 transition hover:bg-zinc-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="rounded-lg bg-zinc-950 px-4 py-2 font-bold text-white transition hover:bg-zinc-800"
-                    >
-                      Provision Profile
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
+          {/* Create Client Modal */}
+          <CreateClientModal
+            isOpen={showClientModal}
+            onClose={() => setShowClientModal(false)}
+            onAddClient={onAddClient}
+          />
 
         </div>
       )}
@@ -773,19 +815,31 @@ export default function AdminDashboard({
 
               return (
                 <div key={user.id} className="rounded-2xl border border-zinc-200 bg-white p-5 space-y-4 shadow-sm hover:shadow-md transition">
-                  <div className="flex items-start justify-between">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedEmployee(user);
+                      setIsEmployeeModalOpen(true);
+                    }}
+                    className="flex w-full items-start justify-between text-left"
+                  >
                     <div>
                       <h4 className="text-xs font-semibold text-zinc-900 font-sans">{user.fullName}</h4>
                       <p className="text-[10px] text-zinc-400 font-mono mt-0.5">{user.email}</p>
                     </div>
-                    
-                    <span className={`rounded px-1.5 py-0.2 text-[9px] font-bold font-mono tracking-wider uppercase ${
-                      user.role === "Administrator" ? "bg-purple-50 text-purple-700" :
-                      user.role === "Manager" ? "bg-sky-50 text-sky-700" : "bg-zinc-50 text-zinc-600"
-                    }`}>
+
+                    <span
+                      className={`rounded px-1.5 py-0.2 text-[9px] font-bold font-mono tracking-wider uppercase ${
+                        user.role === "Administrator"
+                          ? "bg-purple-50 text-purple-700"
+                          : user.role === "Manager"
+                            ? "bg-sky-50 text-sky-700"
+                            : "bg-zinc-50 text-zinc-600"
+                      }`}
+                    >
                       {user.role}
                     </span>
-                  </div>
+                  </button>
 
                   <div className="grid grid-cols-2 gap-2 text-[11px] bg-zinc-50/70 rounded-lg p-3">
                     <div>
@@ -831,8 +885,25 @@ export default function AdminDashboard({
                   )}
 
                   <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-100">
+                    {user.role !== "Administrator" && user.role !== "Manager" && (
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Delete ${user.fullName}?`)) {
+                            onDeleteEmployee(user.id);
+                          }
+                        }}
+                        className="text-[10px] font-semibold text-red-600 hover:text-red-800"
+                      >
+                        Delete
+                      </button>
+                    )}
+
                     <button
-                      onClick={() => onUpdateEmployee(user.id, { status: user.status === "Active" ? "Disabled" : "Active" })}
+                      onClick={() =>
+                        onUpdateEmployee(user.id, {
+                          status: user.status === "Active" ? "Disabled" : "Active",
+                        })
+                      }
                       className="text-[10px] font-semibold text-zinc-500 hover:text-zinc-900"
                     >
                       {user.status === "Active" ? "Deactivate Account" : "Activate Account"}
@@ -843,10 +914,54 @@ export default function AdminDashboard({
             })}
           </div>
 
+          {/* Employee Profile Modal (Details + Lifecycle Actions) */}
+          {selectedEmployee && (
+            <EmployeeProfileModal
+              employee={selectedEmployee}
+              managerName={
+                selectedEmployee.managerId
+                  ? systemUsers.find((u) => u.id === selectedEmployee.managerId)?.fullName
+                  : undefined
+              }
+              counts={
+                selectedEmployeeCounts ?? {
+                  openTicketsCount: 0,
+                  completedTasksCount: 0,
+                  assignedTasksCount: 0,
+                  activeProjectsCount: 0,
+                }
+              }
+              isOpen={isEmployeeModalOpen}
+              onClose={() => {
+                setIsEmployeeModalOpen(false);
+                setSelectedEmployee(null);
+              }}
+              onEdit={(employeeId) => {
+                const employeeToEdit = systemUsers.find((u) => u.id === employeeId);
+                if (employeeToEdit) {
+                  setEditingEmployee(employeeToEdit);
+                  setIsEmployeeModalOpen(false);
+                }
+              }}
+              onResetPassword={(employeeId) => {
+                // Parent currently only exposes onUpdateEmployee/onDeleteEmployee.
+                // Keep modal buildable by mapping reset intent to a no-op status update.
+                onUpdateEmployee(employeeId, { status: selectedEmployee.status });
+                const employeeToReset = systemUsers.find((u) => u.id === employeeId);
+                if (employeeToReset) {
+                  setEmployeeToResetPassword(employeeToReset);
+                }
+              }}
+              onActivate={(employeeId) => onUpdateEmployee(employeeId, { status: "Active" })}
+              onDeactivate={(employeeId) => onUpdateEmployee(employeeId, { status: "Disabled" })}
+              onDelete={(employeeId) => onDeleteEmployee(employeeId)}
+            />
+          )}
+
           {/* CREATE EMPLOYEE MODAL SHEET */}
           {showEmployeeModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-              <div className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
+            <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 backdrop-blur-sm p-4 pt-16">
+              <div className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl mb-8">
                 <h3 className="text-base font-bold text-zinc-900 font-sans">
                   Onboard Operations Personnel
                 </h3>
@@ -943,6 +1058,159 @@ export default function AdminDashboard({
             </div>
           )}
 
+          {/* EDIT EMPLOYEE MODAL SHEET */}
+          {editingEmployee && (
+            <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 backdrop-blur-sm p-4 pt-16">
+              <div className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl mb-8">
+                <h3 className="text-base font-bold text-zinc-900 font-sans">
+                  Edit Employee Profile
+                </h3>
+                <p className="text-xs text-zinc-400 mt-1 pb-3 border-b border-zinc-100 leading-normal">
+                  Update the details for {editingEmployee.fullName}.
+                </p>
+
+                <form onSubmit={handleUpdateEmployeeSubmit} className="mt-4 space-y-3 text-xs">
+                  <div>
+                    <label className="block font-semibold text-zinc-700 mb-1">Full Name *</label>
+                    <input
+                      type="text"
+                      name="fullName"
+                      required
+                      value={editEmpForm.fullName}
+                      onChange={handleEditFormChange}
+                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 focus:border-zinc-900 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-zinc-700 mb-1">Email Address *</label>
+                    <input
+                      type="email"
+                      name="email"
+                      required
+                      value={editEmpForm.email}
+                      onChange={handleEditFormChange}
+                      className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-zinc-700 mb-1">Role</label>
+                    <select
+                      name="role"
+                      value={editEmpForm.role}
+                      onChange={handleEditFormChange}
+                      className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 focus:outline-none"
+                    >
+                      <option value="Employee">Employee</option>
+                      <option value="Manager">Manager</option>
+                      <option value="Administrator">Administrator</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-zinc-700 mb-1">Department</label>
+                    <input
+                      type="text"
+                      name="department"
+                      value={editEmpForm.department}
+                      onChange={handleEditFormChange}
+                      className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-zinc-700 mb-1">Manager</label>
+                    <select
+                      name="managerId"
+                      value={editEmpForm.managerId || ""}
+                      onChange={handleEditFormChange}
+                      className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2"
+                    >
+                      <option value="">No Manager Assigned</option>
+                      {systemUsers
+                        .filter((u) => u.role === "Manager" && u.id !== editingEmployee.id)
+                        .map((mgr) => (
+                          <option key={mgr.id} value={mgr.id}>
+                            {mgr.fullName}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-zinc-700 mb-1">Status</label>
+                    <select
+                      name="status"
+                      value={editEmpForm.status}
+                      onChange={handleEditFormChange}
+                      className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 focus:outline-none"
+                    >
+                      <option value="Active">Active</option>
+                      <option value="Inactive">Inactive</option>
+                      <option value="Disabled">Disabled</option>
+                      <option value="Suspended">Suspended</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-zinc-100 mt-5">
+                    <button type="button" onClick={() => setEditingEmployee(null)} className="rounded-lg border border-zinc-200 bg-white px-4 py-2 font-semibold text-zinc-650">
+                      Cancel
+                    </button>
+                    <button type="submit" className="rounded-lg bg-zinc-950 px-4 py-2 font-bold text-white transition hover:bg-zinc-800">
+                      Save Changes
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* ADMIN RESET PASSWORD CONFIRMATION MODAL */}
+          {employeeToResetPassword && (
+            <div className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+              <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
+                <h3 className="text-lg font-bold text-zinc-900">Reset Password Confirmation</h3>
+                <p className="mt-2 text-sm text-zinc-600">
+                  Are you sure you want to reset the password for{' '}
+                  <strong className="font-semibold text-zinc-900">{employeeToResetPassword.fullName}</strong>
+                  {' ('}<span className="font-mono text-xs">{employeeToResetPassword.email}</span>{')'}?
+                </p>
+                <p className="mt-2 text-xs text-zinc-500">
+                  This will generate a new temporary password and send it to the employee's email address. They will be required to change it on their next login.
+                </p>
+
+                {resetPasswordError && (
+                  <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700 border border-red-200">
+                    <p className="font-bold">Error</p>
+                    <p>{resetPasswordError}</p>
+                  </div>
+                )}
+
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEmployeeToResetPassword(null);
+                      setResetPasswordError(null);
+                    }}
+                    disabled={isResettingPassword}
+                    className="rounded-lg border border-zinc-200 bg-white px-4 py-2 font-semibold text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmResetPassword}
+                    disabled={isResettingPassword}
+                    className="rounded-lg bg-red-600 px-4 py-2 font-bold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isResettingPassword ? 'Resetting...' : 'Reset Password'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -974,19 +1242,79 @@ export default function AdminDashboard({
             </div>
           </div>
 
-          {/* Ticket Listing Grid and Dispatcher widget */}
+{/* Bulk Actions Toolbar */}
+          {selectedTicketIds.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-indigo-200 bg-indigo-50/60 p-4">
+              <span className="text-xs font-bold text-indigo-700">
+                {selectedTicketIds.length} ticket(s) selected
+              </span>
+              <select
+                value={bulkAssignee}
+                onChange={(e) => setBulkAssignee(e.target.value)}
+                className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-semibold focus:outline-none"
+              >
+                <option value="">Assign to employee...</option>
+                {systemUsers
+                  .filter((u) => u.role === "Employee")
+                  .map((emp) => (
+                    <option key={emp.id} value={emp.id}>
+                      {emp.fullName}
+                    </option>
+                  ))}
+              </select>
+              <button
+                onClick={() => handleBulkTicketAction("assign")}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700"
+              >
+                Assign
+              </button>
+              <button
+                onClick={() => handleBulkTicketAction("close")}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => handleBulkTicketAction("export")}
+                className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-bold text-white hover:bg-zinc-700"
+              >
+                Export
+              </button>
+              <button
+                onClick={() => handleBulkTicketAction("delete")}
+                className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700"
+              >
+                Delete
+              </button>
+              <button
+                onClick={() => setSelectedTicketIds([])}
+                className="ml-auto rounded-lg px-3 py-1.5 text-xs font-bold text-zinc-500 hover:bg-zinc-100"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+
+{/* Ticket Listing Grid and Dispatcher widget */}
           <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white text-xs">
-            {tickets.filter((t) => ticketStatusFilter === "all" || t.status === ticketStatusFilter).length === 0 ? (
+            {filteredTickets.length === 0 ? (
               <p className="py-12 text-center text-zinc-400 text-xs">No support cases are currently listed in this category view.</p>
             ) : (
               <div className="divide-y divide-zinc-200">
-                {tickets
-                  .filter((t) => ticketStatusFilter === "all" || t.status === ticketStatusFilter)
-                  .map((ticket) => {
+                {paginatedTickets.map((ticket) => {
                     const clientComp = clients.find((c) => c.id === ticket.clientId);
                     return (
-                      <div key={ticket.id} className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between hover:bg-zinc-55/40 transition">
-                        <div className="space-y-1 sm:max-w-xl">
+                      <div key={ticket.id} className={`flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between transition ${
+                        selectedTicketIds.includes(ticket.id) ? "bg-indigo-50/50" : "hover:bg-zinc-55/40"
+                      }`}>
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedTicketIds.includes(ticket.id)}
+                            onChange={() => toggleTicketSelection(ticket.id)}
+                            className="mt-1 h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          <div className="space-y-1 sm:max-w-xl">
                           <div className="flex flex-wrap items-center gap-2 font-mono text-[10px]">
                             <span className="font-bold text-zinc-900">{ticket.id}</span>
                             <span className="text-zinc-300">·</span>
@@ -1000,7 +1328,7 @@ export default function AdminDashboard({
                             {ticket.description}
                           </p>
 
-                          <div className="pt-1.5 flex flex-wrap gap-1.5 text-[9px] font-bold font-mono uppercase">
+<div className="pt-1.5 flex flex-wrap gap-1.5 text-[9px] font-bold font-mono uppercase">
                             <span className="rounded bg-sky-50 px-1.5 py-0.5 text-sky-800">
                               {ticket.category}
                             </span>
@@ -1014,41 +1342,83 @@ export default function AdminDashboard({
                             <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-700">
                               Status: {ticket.status}
                             </span>
+{ticket.dueDate && (() => {
+                              const badge = getDaysRemainingBadge(ticket.dueDate, ticket.status);
+                              return <span className={`rounded px-1.5 py-0.5 ${badge.color}`}>{badge.text}</span>;
+                            })()}
+                          </div>
                           </div>
                         </div>
 
                         {/* Dispatch Drawer Control right inside layout */}
                         <div className="shrink-0 space-y-2 rounded-xl bg-zinc-50 p-3.5 border border-zinc-150">
                           <span className="block text-[8.5px] uppercase tracking-wider text-zinc-400 font-mono font-semibold">
-                            Dispatch Assignee
+                            {ticket.status === "Resolved" || ticket.status === "Closed" ? "Terminal Status" : "Dispatch Assignee"}
                           </span>
                           
-                          <div className="flex items-center gap-2">
-                            <select
-                              value={ticket.assignedTo || ""}
-                              onChange={(e) => onAssignTicket(ticket.id, e.target.value || null, ticket.priority)}
-                              className="rounded border border-zinc-250 bg-white px-2 py-1 text-xs font-medium text-zinc-850 focus:outline-none"
-                            >
-                              <option value="">Unassigned (Queue)</option>
-                              {systemUsers
-                                .filter((u) => u.role === "Employee")
-                                .map((emp) => (
-                                  <option key={emp.id} value={emp.id}>
-                                    {emp.fullName} ({emp.department})
-                                  </option>
-                                ))}
-                            </select>
+                          <div className="flex flex-col gap-2">
+                            {ticket.status === "Resolved" || ticket.status === "Closed" ? (
+                              <div className="flex items-center gap-2">
+                                <span className="inline-flex items-center rounded-md bg-zinc-200/90 px-2.5 py-1 text-xs font-bold text-zinc-700">
+                                  {ticket.status} (Non-Active)
+                                </span>
+                                {onReopenTicket && (
+                                  <button
+                                    onClick={() => onReopenTicket(ticket.id)}
+                                    className="rounded bg-amber-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-amber-700 transition shadow-sm"
+                                  >
+                                    Reopen
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <select
+                                  value={ticket.assignedTo || ""}
+                                  onChange={(e) => onAssignTicket(ticket.id, e.target.value || null, ticket.priority)}
+                                  className="rounded border border-zinc-250 bg-white px-2 py-1 text-xs font-medium text-zinc-850 focus:outline-none"
+                                >
+                                  <option value="">Unassigned (Queue)</option>
+                                  {systemUsers
+                                    .filter((u) => u.role === "Employee")
+                                    .map((emp) => (
+                                      <option key={emp.id} value={emp.id}>
+                                        {emp.fullName} ({emp.department})
+                                      </option>
+                                    ))}
+                                </select>
 
-                            <select
-                              value={ticket.priority}
-                              onChange={(e) => onAssignTicket(ticket.id, ticket.assignedTo, e.target.value as TicketPriority)}
-                              className="rounded border border-zinc-250 bg-white px-1.5 py-1 text-xs font-mono font-bold text-zinc-850 focus:outline-none"
-                            >
-                              <option value="Low">Low</option>
-                              <option value="Medium">Medium</option>
-                              <option value="High">High</option>
-                              <option value="Critical">Critical</option>
-                            </select>
+                                <select
+                                  value={ticket.priority}
+                                  onChange={(e) => onAssignTicket(ticket.id, ticket.assignedTo, e.target.value as TicketPriority)}
+                                  className="rounded border border-zinc-250 bg-white px-1.5 py-1 text-xs font-mono font-bold text-zinc-850 focus:outline-none"
+                                >
+                                  <option value="Low">Low</option>
+                                  <option value="Medium">Medium</option>
+                                  <option value="High">High</option>
+                                  <option value="Critical">Critical</option>
+                                </select>
+                              </div>
+                            )}
+
+                            <div className="flex gap-2 mt-1">
+                              <button
+                                onClick={() => setSelectedTicket(ticket)}
+                                className="flex-1 rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-700"
+                              >
+                                View Details
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (window.confirm(`Delete ticket ${ticket.id}?`)) {
+                                    onDeleteTicket(ticket.id);
+                                  }
+                                }}
+                                className="flex-1 rounded bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-700"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1058,6 +1428,40 @@ export default function AdminDashboard({
             )}
           </div>
 
+          {/* Ticket Pagination */}
+          {filteredTickets.length > 0 && (
+            <Pagination
+              page={ticketPage}
+              pageSize={ticketPageSize}
+              totalItems={filteredTickets.length}
+              onPageChange={setTicketPage}
+              onPageSizeChange={(size) => {
+                setTicketPageSize(size);
+                setTicketPage(1);
+              }}
+            />
+          )}
+
+          {/* Ticket Detail Modal */}
+          {selectedTicket && (
+            <TicketDetailModal
+              ticket={selectedTicket}
+              users={systemUsers}
+              currentUserId={systemUsers.find(u => u.role === "Administrator")?.id || ""}
+              currentUserRole="Administrator"
+              currentUserName={systemUsers.find(u => u.role === "Administrator")?.fullName || "Administrator"}
+              onClose={() => setSelectedTicket(null)}
+              onUpdateStatus={(ticketId, status, notes, resolution) => {
+                // Call the actual onUpdateTicketStatus prop from AdminDashboard
+                onUpdateTicketStatus?.(ticketId, status, notes, resolution);
+                setSelectedTicket(null);
+              }}
+              onReopenTicket={(ticketId) => {
+                onReopenTicket?.(ticketId);
+                setSelectedTicket(null);
+              }}
+            />
+          )}
         </div>
       )}
 
@@ -1095,22 +1499,64 @@ export default function AdminDashboard({
             </div>
           </div>
 
+          {/* Bulk Actions Toolbar for Tasks */}
+          {selectedTaskIds.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-indigo-200 bg-indigo-50/60 p-4">
+              <span className="text-xs font-bold text-indigo-700">
+                {selectedTaskIds.length} task(s) selected
+              </span>
+              <div className="flex items-center gap-2 ml-auto">
+                <button
+                  onClick={() => handleBulkTaskAction("export")}
+                  className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-bold text-white hover:bg-zinc-700"
+                >
+                  Export
+                </button>
+                <button
+                  onClick={() => handleBulkTaskAction("delete")}
+                  className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700"
+                >
+                  Delete
+                </button>
+                <button
+                  onClick={() => setSelectedTaskIds([])}
+                  className="ml-auto rounded-lg px-3 py-1.5 text-xs font-bold text-zinc-500 hover:bg-zinc-100"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Task Grid layout */}
+          {filteredTasks.length === 0 ? (
+            <EmptyState
+              title="No tasks found"
+              message="No tasks match the specified filter. Try a different status."
+            />
+          ) : (
           <div className="grid gap-4 md:grid-cols-2">
-            {tasks
-              .filter((tk) => taskStatusFilter === "all" || tk.status === taskStatusFilter)
-              .map((task) => {
+            {paginatedTasks.map((task) => {
                 const assigneeUser = systemUsers.find((u) => u.id === task.assignedTo);
-                
+
                 // Determine overdue calculation dynamically relative to mock environment time "2026-06-16"
-                const isTaskOverdue = task.status !== "Completed" && new Date(task.dueDate) < new Date("2026-06-16");
+                const isTaskOverdue = task.isOverdue;
 
                 return (
-                  <div key={task.id} className={`rounded-2xl bg-white border p-5 shadow-sm space-y-4 hover:shadow-md transition ${
-                    isTaskOverdue ? "border-red-200 bg-red-50/10" : "border-zinc-200"
+                  <div key={task.id} className={`relative rounded-2xl bg-white border p-5 shadow-sm space-y-4 hover:shadow-md transition ${
+                    isTaskOverdue ? "border-red-200 bg-red-50/10" :
+                    selectedTaskIds.includes(task.id) ? "border-indigo-300 ring-2 ring-indigo-200" : "border-zinc-200"
                   }`}>
+                    <div className="absolute top-3 right-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedTaskIds.includes(task.id)}
+                        onChange={() => toggleTaskSelection(task.id)}
+                        className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                    </div>
                     <div className="flex items-start justify-between">
-                      <div className="space-y-1">
+                      <div className="space-y-1 pr-8">
                         <div className="flex items-center gap-2 font-mono text-[9px]">
                           <span className="font-bold text-zinc-900">{task.id}</span>
                           <span className="text-zinc-300">·</span>
@@ -1126,7 +1572,7 @@ export default function AdminDashboard({
                         task.status === "Escalated" || isTaskOverdue ? "bg-red-100 text-red-800 animate-pulse" :
                         "bg-zinc-100 text-zinc-700"
                       }`}>
-                        {task.status} {isTaskOverdue && "(OVERDUE)"}
+                        {task.status === "Completed" ? "Completed (Non-Active)" : task.status} {isTaskOverdue && "(OVERDUE)"}
                       </span>
                     </div>
 
@@ -1142,6 +1588,10 @@ export default function AdminDashboard({
                         <span className={`font-semibold font-mono ${isTaskOverdue ? "text-red-600 font-bold" : "text-zinc-800"}`}>
                           {formatDate(task.dueDate)}
                         </span>
+                        {task.dueDate && (() => {
+                          const badge = getDaysRemainingBadge(task.dueDate, task.status);
+                          return <span className={`ml-1 inline-block rounded px-1.5 py-0.5 text-[9px] font-bold ${badge.color}`}>{badge.text}</span>;
+                        })()}
                       </div>
                     </div>
 
@@ -1153,15 +1603,71 @@ export default function AdminDashboard({
                         </p>
                       </div>
                     )}
+
+                    <div className="flex justify-end gap-2 border-t border-zinc-100 pt-3">
+                      <button
+                        onClick={() => setSelectedTaskDetail(task)}
+                        className="rounded bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+                      >
+                        View Details
+                      </button>
+
+                      {task.status === "Completed" && onReopenTask && (
+                        <button
+                          onClick={() => onReopenTask(task.id)}
+                          className="rounded bg-amber-600 px-3 py-1 text-xs font-bold text-white hover:bg-amber-700 transition shadow-sm"
+                        >
+                          Reopen
+                        </button>
+                      )}
+
+                      {task.status !== "Completed" && task.status !== "In Progress" && task.status !== "Escalated" && (
+                        <button
+                          onClick={() =>
+                            onUpdateTaskStatus(task.id, "Completed", "Task completed successfully.")
+                          }
+                          className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700"
+                        >
+                          Complete
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Delete task ${task.id}?`)) {
+                            onDeleteTask(task.id);
+                          }
+                        }}
+                        className="rounded bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-700"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    
                   </div>
-                );
+);
               })}
           </div>
+          )}
+
+          {/* Task Pagination */}
+          {filteredTasks.length > 0 && (
+            <Pagination
+              page={taskPage}
+              pageSize={taskPageSize}
+              totalItems={filteredTasks.length}
+              onPageChange={setTaskPage}
+              onPageSizeChange={(size) => {
+                setTaskPageSize(size);
+                setTaskPage(1);
+              }}
+            />
+          )}
 
           {/* CREATE TASK MODAL SHEET */}
           {showTaskModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-              <div className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
+            <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 backdrop-blur-sm p-4 pt-16">
+              <div className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl mb-8">
                 <h3 className="text-base font-bold text-zinc-900 font-sans">
                   Assign Administrative Task
                 </h3>
@@ -1244,6 +1750,16 @@ export default function AdminDashboard({
                   </div>
 
                   <div>
+                    <label className="block font-semibold text-zinc-700 mb-1">Start Date</label>
+                    <input
+                      type="date"
+                      value={newTaskStartDate}
+                      onChange={(e) => setNewTaskStartDate(e.target.value)}
+                      className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block font-semibold text-zinc-700 mb-1">Limit Date (Due Date) *</label>
                     <input
                       type="date"
@@ -1274,7 +1790,48 @@ export default function AdminDashboard({
             </div>
           )}
 
+          {/* Task Detail Modal */}
+          {selectedTaskDetail && (
+            <TaskDetailModal
+              task={selectedTaskDetail}
+              currentUserId={systemUsers.find(u => u.role === "Administrator")?.id || ""}
+              currentUserRole="Administrator"
+              currentUserName={systemUsers.find(u => u.role === "Administrator")?.fullName || "Administrator"}
+              onClose={() => setSelectedTaskDetail(null)}
+              onUpdateStatus={(taskId, status, notes) => {
+                onUpdateTaskStatus(taskId, status, notes);
+                setSelectedTaskDetail(null);
+              }}
+              onUpdateProgress={onUpdateTaskProgress}
+              onReviewTask={onReviewTask}
+              onReopenTask={(taskId) => {
+                onReopenTask?.(taskId);
+                setSelectedTaskDetail(null);
+              }}
+              isManager={true}
+            />
+          )}
+
         </div>
+      )}
+
+      {/* REPORTS & ANALYTICS TAB */}
+      {activeTab === "reports" && (
+        <ReportsPanel
+          users={systemUsers}
+          clients={clients}
+          tickets={tickets}
+          tasks={tasks}
+          auditLogs={auditLogs}
+        />
+      )}
+
+      {/* AUDIT LOG TAB */}
+      {activeTab === "audit" && (
+        <AuditLogPanel
+          auditLogs={auditLogs}
+          users={systemUsers}
+        />
       )}
 
     </div>

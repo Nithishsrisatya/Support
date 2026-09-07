@@ -17,6 +17,8 @@ export interface User {
   status: UserStatus;
   createdDate: string;
   updatedDate: string;
+  firstLogin?: boolean;
+  first_login?: boolean;
 }
 
 export type ClientStatus = "Active" | "Inactive" | "Disabled" | "Suspended" | "Pending Activation";
@@ -24,12 +26,15 @@ export type ClientStatus = "Active" | "Inactive" | "Disabled" | "Suspended" | "P
 export interface Client {
   id: string; // ClientID
   companyName: string;
+  companyDomain?: string;
   contactPerson: string;
   email: string;
   phoneNumber: string;
+  city?: string;
   status: ClientStatus;
   createdDate: string;
   updatedDate: string;
+  firstLogin?: boolean;
 }
 
 export type TicketCategory = "Technical Issue" | "Account Issue" | "Billing Issue" | "Service Request" | "General Inquiry";
@@ -37,6 +42,8 @@ export type TicketCategory = "Technical Issue" | "Account Issue" | "Billing Issu
 export type TicketPriority = "Low" | "Medium" | "High" | "Critical";
 
 export type TicketStatus = "New" | "Assigned" | "In Progress" | "Pending" | "Resolved" | "Closed";
+export const TERMINAL_TICKET_STATUSES: readonly TicketStatus[] = ["Resolved", "Closed"] as const;
+export const ACTIVE_TICKET_STATUSES: readonly TicketStatus[] = ["New", "Assigned", "In Progress", "Pending"] as const;
 
 export interface Ticket {
   id: string; // TicketID
@@ -49,10 +56,13 @@ export interface Ticket {
   clientId: string; // ClientID
   createdDate: string;
   updatedDate: string;
+  dueDate?: string | null;
+  completedAt?: string | null;
+  isOverdue?: boolean;
   resolutionSummary?: string;
   resolutionDate?: string;
   employeeNotes?: string;
-  satisfactionRating?: number; // 1-5 scale for metrics
+satisfactionRating?: number; // 1-5 scale for metrics
   satisfactionNotes?: string;
   history: TicketHistoryEntry[];
 }
@@ -69,6 +79,42 @@ export type TaskCategory = "Operational" | "Support" | "Administrative" | "Docum
 export type TaskPriority = "Low" | "Medium" | "High" | "Critical";
 
 export type TaskStatus = "Pending" | "Assigned" | "In Progress" | "Completed" | "Overdue" | "Escalated";
+export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = ["Completed"] as const;
+export const ACTIVE_TASK_STATUSES: readonly TaskStatus[] = ["Pending", "Assigned", "In Progress", "Overdue", "Escalated"] as const;
+
+export type ReviewStatus = "Pending Review" | "Approved" | "Rejected";
+
+export interface TaskProgressUpdate {
+  id: string;
+  taskId: string;
+  userId: string;
+  userFullName: string;
+  progressPercentage: number; // 0-100
+  comment: string;
+  createdDate: string;
+}
+
+export interface TaskHistoryEntry {
+  id: string;
+  taskId: string;
+  type: "status_change" | "progress" | "attachment" | "review" | "creation";
+  timestamp: string;
+  userFullName: string;
+  description: string;
+  metadata?: any;
+}
+
+export interface TaskAttachment {
+  id: string;
+  taskId: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  mimeType: string;
+  uploadedBy: string;
+  uploadedByName: string;
+  createdDate: string;
+}
 
 export interface Task {
   id: string; // TaskID
@@ -77,14 +123,24 @@ export interface Task {
   taskCategory: TaskCategory;
   assignedBy: string; // UserID (Administrator)
   assignedTo: string; // UserID (Employee)
+  startDate?: string | null;
   dueDate: string;
   priority: TaskPriority;
   status: TaskStatus;
   escalationStatus: "Yes" | "No";
   completionDate?: string;
+  completedAt?: string | null;
   completionNotes?: string;
+  isOverdue?: boolean;
   createdDate: string;
   updatedDate: string;
+  
+  // Phase 7 additions
+  progressPercentage?: number; // 0-100
+  reviewStatus?: ReviewStatus;
+  managerNotes?: string;
+  reviewedBy?: string; // UserID
+  reviewedDate?: string;
 }
 
 export type NotificationType =
@@ -94,7 +150,9 @@ export type NotificationType =
   | "Ticket Update"
   | "Task Assignment"
   | "Task Reminder"
-  | "Escalation Alert";
+  | "Escalation Alert"
+  | "Overdue Alert"
+  | "Due Reminder";
 
 export type NotificationStatus = "Sent" | "Delivered" | "Read" | "Failed";
 
@@ -112,15 +170,24 @@ export interface Notification {
 export type AuditLogAction =
   | "Login"
   | "Logout"
+  | "Password Change"
   | "Password Reset"
+  | "User Creation"
+  | "User Deletion"
+  | "Client Creation"
+  | "Client Deletion"
   | "Ticket Creation"
   | "Ticket Update"
+  | "Ticket Deletion"
   | "Task Assignment"
   | "Task Update"
+  | "Task Deletion"
   | "Account Creation"
-  | "Account Status Change";
+  | "Account Status Change"
+  | "Email Activity"
+  | "Admin Action";
 
-export type AuditLogEntityType = "User" | "Client" | "Ticket" | "Task" | "Notification";
+export type AuditLogEntityType = "User" | "Client" | "Ticket" | "Task" | "Notification" | "Email" | "System";
 
 export interface AuditLog {
   id: string; // LogID
@@ -143,3 +210,35 @@ export interface SentEmail {
   status: string;
 }
 
+export interface TicketComment {
+  id: string;
+  ticketId: string;
+  authorId: string;
+  authorName: string;
+  authorRole: UserRole;
+  content: string;
+  isInternal: boolean;
+  createdDate: string;
+}
+
+export interface TicketAttachment {
+  id: string;
+  ticketId: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  mimeType: string;
+  uploadedBy: string;
+  uploadedByName: string;
+  createdDate: string;
+}
+
+export interface TicketTimelineEntry {
+  id: string;
+  ticketId: string;
+  type: "history" | "comment" | "attachment";
+  timestamp: string;
+  description: string;
+  user: string;
+  metadata?: any;
+}

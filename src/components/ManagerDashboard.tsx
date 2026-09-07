@@ -3,8 +3,11 @@ import { User, Client, Ticket, Task, AuditLog, TicketPriority, TaskStatus } from
 import { formatDate } from "../utils";
 import { 
   Users, ClipboardCheck, AlertTriangle, Play, CheckCircle2, TrendingUp, Search, 
-  BarChart4, ArrowUpRight, ShieldCheck, Mail, ShieldAlert, Award, Stars
+  BarChart4, ArrowUpRight, ShieldCheck, Mail, ShieldAlert, Award, Stars, LayoutDashboard,
+  Calendar as CalendarIcon
 } from "lucide-react";
+import HomeDashboard from "./HomeDashboard";
+import DeadlineCalendar from "./DeadlineCalendar";
 
 interface ManagerDashboardProps {
   currentManager: User;
@@ -23,7 +26,7 @@ export default function ManagerDashboard({
   tasks,
   auditLogs,
 }: ManagerDashboardProps) {
-  const [activeSubTab, setActiveSubTab] = useState<"team" | "escalations" | "department">("team");
+  const [activeSubTab, setActiveSubTab] = useState<"dashboard" | "calendar" | "team" | "escalations" | "department">("dashboard");
   const [staffFilter, setStaffFilter] = useState("all");
 
   // Teammates supervised by this manager (Robert Chen supervises David Kim)
@@ -45,9 +48,9 @@ export default function ManagerDashboard({
     ? Math.round((totalCompletedCount / totalAssignedCount) * 100) 
     : 100;
 
-  const escalatedTasks = supervisedTasks.filter((t) => t.status === "Escalated" || t.escalationStatus === "Yes");
+  const escalatedTasks = supervisedTasks.filter((t) => (t.status === "Escalated" || t.escalationStatus === "Yes") && t.status !== "Completed");
   const overdueTasks = supervisedTasks.filter(
-    (t) => t.status === "Overdue" || (t.status !== "Completed" && new Date(t.dueDate) < new Date("2026-06-16"))
+    (t) => t.status !== "Completed" && (t.status === "Overdue" || t.isOverdue)
   );
 
   const resolvedTickets = supervisedTickets.filter((t) => t.status === "Resolved" || t.status === "Closed");
@@ -161,6 +164,24 @@ export default function ManagerDashboard({
       {/* Internal Tab selectors */}
       <div className="flex items-center gap-1.5 border-b border-zinc-150 pb-2">
         <button
+          onClick={() => setActiveSubTab("dashboard")}
+          className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition uppercase duration-150 tracking-wider flex items-center gap-1.5 ${
+            activeSubTab === "dashboard" ? "bg-zinc-950 text-white" : "text-zinc-500 hover:bg-zinc-50"
+          }`}
+        >
+          <LayoutDashboard size={14} />
+          <span>Dashboard Overview</span>
+        </button>
+        <button
+          onClick={() => setActiveSubTab("calendar")}
+          className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition uppercase duration-150 tracking-wider flex items-center gap-1.5 ${
+            activeSubTab === "calendar" ? "bg-zinc-950 text-white" : "text-zinc-500 hover:bg-zinc-50"
+          }`}
+        >
+          <CalendarIcon size={14} />
+          <span>Deadline Calendar</span>
+        </button>
+        <button
           onClick={() => setActiveSubTab("team")}
           className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition uppercase duration-150 tracking-wider ${
             activeSubTab === "team" ? "bg-zinc-950 text-white" : "text-zinc-500 hover:bg-zinc-50"
@@ -190,6 +211,27 @@ export default function ManagerDashboard({
           Team Productivity scoring
         </button>
       </div>
+
+      {/* Dashboard Overview */}
+      {activeSubTab === "dashboard" && (
+        <HomeDashboard
+          clients={clients}
+          users={systemUsers}
+          tickets={tickets}
+          tasks={tasks}
+        />
+      )}
+
+      {/* Deadline Calendar */}
+      {activeSubTab === "calendar" && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+          <DeadlineCalendar
+            currentUserRole="Manager"
+            currentUserId={currentManager.id}
+            currentUserName={currentManager.fullName}
+          />
+        </div>
+      )}
 
       {/* TEAM MEMBERS WORKLOAD OVERVIEW */}
       {activeSubTab === "team" && (

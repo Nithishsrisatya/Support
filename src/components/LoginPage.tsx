@@ -1,81 +1,84 @@
 import React, { useState } from "react";
-import { User, Client } from "../types";
 import { Lock, Mail, ClipboardList, ChevronRight, AlertCircle } from "lucide-react";
+import { apiFetch } from "../services/api";
+import type { User } from "../types";
 
 interface LoginPageProps {
-  users: User[];
-  clients: Client[];
-  onLoginSuccess: (
-    role: "Administrator" | "Manager" | "Employee" | "Client",
-    targetId: string
-  ) => void;
+  onLoginSuccess: (user: User) => void;
 }
 
-export default function LoginPage({ users, clients, onLoginSuccess }: LoginPageProps) {
+
+export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  // Forgot password modal state
+  const [showForgotModal, setShowForgotModal] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotSuccess, setForgotSuccess] = useState(false);
+  const [forgotError, setForgotError] = useState<string | null>(null);
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    setIsLoading(true);
+    setForgotError(null);
+    setForgotLoading(true);
 
-    setTimeout(() => {
-      const trimmedEmail = email.trim().toLowerCase();
+    try {
+      const res = await apiFetch("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email: forgotEmail.trim() }),
+      });
 
-      // 1. Try finding a Staff User with this email
-      const foundUser = users.find(
-        (u) => u.email.toLowerCase() === trimmedEmail
-      );
-
-      if (foundUser) {
-        if (foundUser.passwordHash !== password) {
-          setError("Incorrect password for this user profile.");
-          setIsLoading(false);
-          return;
-        }
-
-        if (foundUser.status === "Suspended" || foundUser.status === "Disabled") {
-          setError("This user profile is currently deactivated.");
-          setIsLoading(false);
-          return;
-        }
-
-        onLoginSuccess(foundUser.role, foundUser.id);
-        setIsLoading(false);
-        return;
+      if (res?.success) {
+        setForgotSuccess(true);
+      } else {
+        setForgotError(res?.message || "Failed to process request.");
       }
-
-      // 2. Try finding a Client with this email
-      const foundClient = clients.find(
-        (c) => c.email.toLowerCase() === trimmedEmail
-      );
-
-      if (foundClient) {
-        if (password !== "client123" && password !== "client") {
-          setError("Invalid security key for this client profile. Use 'client123'.");
-          setIsLoading(false);
-          return;
-        }
-
-        if (foundClient.status === "Suspended" || foundClient.status === "Disabled") {
-          setError("This client profile is currently suspended.");
-          setIsLoading(false);
-          return;
-        }
-
-        onLoginSuccess("Client", foundClient.id);
-        setIsLoading(false);
-        return;
-      }
-
-      // If no matching profile is found at all
-      setError("No registered staff user or client profile found with this email address.");
-      setIsLoading(false);
-    }, 600);
+    } catch (err: any) {
+      setForgotError(err?.message || "Failed to send reset link. Please try again.");
+    } finally {
+      setForgotLoading(false);
+    }
   };
+
+  const handleLogin = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError(null);
+  setIsLoading(true);
+
+  try {
+    const response = await apiFetch("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        password,
+      }),
+    });
+
+    if (!response.success) {
+      setError(response.message || "Login failed. Please try again.");
+      setIsLoading(false);
+      return;
+    }
+    
+    localStorage.setItem("token", response.token);
+    localStorage.setItem(
+  "currentUser",
+  JSON.stringify(response.user)
+);
+localStorage.setItem("accountType", response.user.userType);
+console.log(response.user);
+    onLoginSuccess(response.user);
+  } catch (err: any) {
+    console.error("Login request failed:", err);
+    setError(err.message || "Network error. Please try again.");
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#0A0A0B] px-4 py-12 sm:px-6 lg:px-8">
@@ -137,9 +140,23 @@ export default function LoginPage({ users, clients, onLoginSuccess }: LoginPageP
 
             {/* Password field */}
             <div>
-              <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5 font-mono">
-                Password
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 font-mono">
+                  Password
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowForgotModal(true);
+                    setForgotEmail(email);
+                    setForgotSuccess(false);
+                    setForgotError(null);
+                  }}
+                  className="text-[11px] text-indigo-400 hover:text-indigo-300 transition"
+                >
+                  Forgot Password?
+                </button>
+              </div>
               <div className="relative">
                 <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-zinc-500">
                   <Lock className="h-4 w-4" />
@@ -170,6 +187,84 @@ export default function LoginPage({ users, clients, onLoginSuccess }: LoginPageP
             </button>
           </form>
         </div>
+
+        {/* Forgot Password Modal */}
+        {showForgotModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-[#18181B] p-6 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono">
+                  Reset Account Password
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowForgotModal(false)}
+                  className="text-zinc-500 hover:text-white text-lg leading-none"
+                >
+                  &times;
+                </button>
+              </div>
+
+              {forgotSuccess ? (
+                <div className="space-y-4 py-2">
+                  <div className="rounded-lg border border-emerald-900 bg-emerald-950/40 p-3 text-xs text-emerald-300">
+                    If an account with this email exists, a secure password reset link has been sent to your inbox. The link expires in 30 minutes.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotModal(false)}
+                    className="w-full rounded-lg bg-indigo-600 py-2.5 text-xs font-semibold text-white hover:bg-indigo-500 transition"
+                  >
+                    Back to Sign In
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleForgotPassword} className="space-y-4">
+                  <p className="text-xs text-zinc-400">
+                    Enter the email address associated with your account. We will send you a single-use secure reset link.
+                  </p>
+
+                  {forgotError && (
+                    <div className="rounded-lg border border-red-900 bg-red-950/40 p-3 text-xs text-red-300">
+                      {forgotError}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-1 font-mono">
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={forgotEmail}
+                      onChange={(e) => setForgotEmail(e.target.value)}
+                      placeholder="name@company.com"
+                      className="block w-full rounded-lg border border-zinc-800 bg-[#0A0A0B]/80 py-2.5 px-3 text-xs text-zinc-200 placeholder-zinc-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowForgotModal(false)}
+                      className="rounded-lg border border-zinc-700 px-4 py-2 text-xs text-zinc-300 hover:bg-zinc-800"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={forgotLoading}
+                      className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+                    >
+                      {forgotLoading ? "Sending..." : "Send Reset Link"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
 
       </div>
     </div>

@@ -1,7 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;550;700&display=swap');
-@import "tailwindcss";
 
-@theme {
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root{
   --color-white: #18181B; /* Main card and box background of Elegant Dark */
   --color-zinc-50: #0A0A0B; /* Global canvas background of Elegant Dark */
   --color-zinc-100: #27272A; /* Slate light accents */
