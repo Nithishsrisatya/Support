@@ -1,3 +1,7 @@
+import dotenv from "dotenv";
+dotenv.config();
+
+import bcrypt from "bcrypt";
 import { pool } from "./db";
 import {
   SEED_USERS,
@@ -8,7 +12,8 @@ import {
   SEED_AUDIT_LOGS,
 } from "./seedData";
 
-async function migrate() {
+export async function migrate(customPool = pool, closePoolAtEnd = true) {
+  const targetPool = customPool;
   try {
     console.log("🚀 Starting database migration...");
 
@@ -414,40 +419,62 @@ async function migrate() {
     // =========================================================================
     console.log("➡️ Seeding initial data...");
 
-    // Users
+    // Users (Initial Administrator)
     for (const user of SEED_USERS) {
-      await pool.query(
-        `
-        INSERT INTO users (
-          id,
-          full_name,
-          email,
-          password_hash,
-          role,
-          department,
-          manager_id,
-          status,
-          created_date,
-          updated_date
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        ON CONFLICT (id) DO NOTHING
-        `,
-        [
-          user.id,
-          user.fullName,
-          user.email,
-          user.passwordHash,
-          user.role,
-          user.department,
-          user.managerId,
-          user.status,
-          user.createdDate,
-          user.updatedDate,
-        ]
+      // Check if this user (by ID or email) already exists
+      const existingUser = await pool.query(
+        `SELECT id, email, password_hash FROM users WHERE id = $1 OR LOWER(email) = LOWER($2)`,
+        [user.id, user.email]
       );
+
+      if (existingUser.rows.length === 0) {
+        const initialPassword = process.env.INITIAL_ADMIN_PASSWORD;
+        if (!initialPassword || !initialPassword.trim()) {
+          throw new Error(
+            "❌ Migration failed: INITIAL_ADMIN_PASSWORD environment variable is required to create the initial Administrator account on a fresh database. Please set INITIAL_ADMIN_PASSWORD in your environment."
+          );
+        }
+
+        const passwordHash = await bcrypt.hash(initialPassword.trim(), 10);
+
+        await pool.query(
+          `
+          INSERT INTO users (
+            id,
+            full_name,
+            email,
+            password_hash,
+            role,
+            department,
+            manager_id,
+            status,
+            first_login,
+            created_date,
+            updated_date
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          ON CONFLICT (id) DO NOTHING
+          `,
+          [
+            user.id,
+            user.fullName,
+            user.email,
+            passwordHash,
+            user.role,
+            user.department,
+            user.managerId,
+            user.status,
+            false,
+            user.createdDate,
+            user.updatedDate,
+          ]
+        );
+        console.log(`✅ Initial Administrator (${user.email}) seeded with secure password hash`);
+      } else {
+        console.log(`ℹ️ Administrator account (${user.email}) already exists. Preserving existing account and password.`);
+      }
     }
-    console.log("✅ Users seeded");
+    console.log("✅ Users check/seed completed");
 
     // Clients
     for (const client of SEED_CLIENTS) {
@@ -645,17 +672,38 @@ async function migrate() {
 
     console.log("🎉 Migration completed successfully!");
 
-    await pool.end();
-    process.exit(0);
+    if (closePoolAtEnd) {
+      await pool.end();
+    }
   } catch (err: any) {
     console.error("❌ Migration failed");
     console.error(err);
     console.error(err?.stack);
 
-    await pool.end();
+    if (closePoolAtEnd) {
+      await pool.end();
+    }
 
-    process.exit(1);
+    throw err;
   }
 }
 
-migrate();
+// Auto-run if executed directly as entry script (e.g., npm run migrate)
+const isDirectCli =
+  typeof process !== "undefined" &&
+  Boolean(
+    process.argv[1] &&
+      (process.argv[1].endsWith("migrate.ts") ||
+        process.argv[1].endsWith("migrate.js") ||
+        process.argv[1].endsWith("migrate.mjs"))
+  );
+
+if (isDirectCli) {
+  migrate(pool, true)
+    .then(() => {
+      process.exit(0);
+    })
+    .catch(() => {
+      process.exit(1);
+    });
+}

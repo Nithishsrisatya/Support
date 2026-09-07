@@ -3,39 +3,15 @@ import { User, Client, Ticket, Task, Notification, AuditLog } from "./types";
 export const SEED_USERS: User[] = [
   {
     id: "U-1",
-    fullName: "Sarah Jenkins",
-    email: "sarah@workflow.com",
-    passwordHash: "sarah123", // Pre-populated password for demonstration
+    fullName: "Administrator",
+    email: "korlapatinithishsrisatya@gmail.com",
+    passwordHash: "", // Sourced securely from INITIAL_ADMIN_PASSWORD environment variable during migration
     role: "Administrator",
     department: "Administration",
     managerId: null,
     status: "Active",
     createdDate: "2026-01-10T09:00:00Z",
     updatedDate: "2026-01-10T09:00:00Z",
-  },
-  {
-    id: "U-2",
-    fullName: "Robert Chen",
-    email: "robert@workflow.com",
-    passwordHash: "robert123",
-    role: "Manager",
-    department: "Support & Operations",
-    managerId: null,
-    status: "Active",
-    createdDate: "2026-01-15T11:30:00Z",
-    updatedDate: "2026-01-15T11:30:00Z",
-  },
-  {
-    id: "U-3",
-    fullName: "David Kim",
-    email: "david@workflow.com",
-    passwordHash: "david123",
-    role: "Employee",
-    department: "Support & Operations",
-    managerId: "U-2", // Supervised by Robert Chen
-    status: "Active",
-    createdDate: "2026-01-20T08:15:00Z",
-    updatedDate: "2026-01-20T08:15:00Z",
   },
 ];
 
@@ -90,7 +66,7 @@ export const SEED_TICKETS: Ticket[] = [
     category: "Technical Issue",
     priority: "Low",
     status: "In Progress",
-    assignedTo: "U-3", // David Kim
+    assignedTo: "U-1", // Assigned to Administrator
     clientId: "C-2", // Quantum Solutions
     createdDate: "2026-06-12T14:35:00Z",
     updatedDate: "2026-06-14T10:15:00Z",
@@ -104,13 +80,13 @@ export const SEED_TICKETS: Ticket[] = [
       {
         timestamp: "2026-06-13T09:00:00Z",
         status: "Assigned",
-        updatedBy: "Sarah Jenkins",
-        comment: "Assigned to support technician David Kim.",
+        updatedBy: "Administrator",
+        comment: "Assigned to Administrator for investigation.",
       },
       {
         timestamp: "2026-06-14T10:15:00Z",
         status: "In Progress",
-        updatedBy: "David Kim",
+        updatedBy: "Administrator",
         comment: "Analyzing nginx routing logs and test scripts.",
       },
     ],
@@ -142,7 +118,7 @@ export const SEED_TICKETS: Ticket[] = [
     category: "Account Issue",
     priority: "High",
     status: "Assigned",
-    assignedTo: "U-3", // David Kim
+    assignedTo: "U-1", // Assigned to Administrator
     clientId: "C-3", // Apex Digital
     createdDate: "2026-06-15T08:40:00Z",
     updatedDate: "2026-06-15T11:10:00Z",
@@ -156,8 +132,8 @@ export const SEED_TICKETS: Ticket[] = [
       {
         timestamp: "2026-06-15T11:10:00Z",
         status: "Assigned",
-        updatedBy: "Sarah Jenkins",
-        comment: "Assigned as high urgency to David Kim.",
+        updatedBy: "Administrator",
+        comment: "Assigned as high urgency to Administrator.",
       },
     ],
   },
@@ -168,7 +144,7 @@ export const SEED_TICKETS: Ticket[] = [
     category: "Technical Issue",
     priority: "Critical",
     status: "Resolved",
-    assignedTo: "U-3", // David Kim
+    assignedTo: "U-1", // Assigned to Administrator
     clientId: "C-1", // TechCorp Pro
     createdDate: "2026-06-15T10:15:00Z",
     updatedDate: "2026-06-15T14:45:00Z",
@@ -185,19 +161,19 @@ export const SEED_TICKETS: Ticket[] = [
       {
         timestamp: "2026-06-15T10:30:00Z",
         status: "Assigned",
-        updatedBy: "Sarah Jenkins",
-        comment: "Immediate dispatch to engineer David Kim.",
+        updatedBy: "Administrator",
+        comment: "Immediate dispatch to Administrator.",
       },
       {
         timestamp: "2026-06-15T10:45:00Z",
         status: "In Progress",
-        updatedBy: "David Kim",
+        updatedBy: "Administrator",
         comment: "Diagnosing application exception logs.",
       },
       {
         timestamp: "2026-06-15T14:45:00Z",
         status: "Resolved",
-        updatedBy: "David Kim",
+        updatedBy: "Administrator",
         comment: "Infrastructure service restarted and stabilized.",
       },
     ],
@@ -209,7 +185,7 @@ export const SEED_TICKETS: Ticket[] = [
     category: "Service Request",
     priority: "Medium",
     status: "Closed",
-    assignedTo: "U-3", // David Kim
+    assignedTo: "U-1", // Assigned to Administrator
     clientId: "C-2", // Quantum Solutions
     createdDate: "2026-06-10T12:00:00Z",
     updatedDate: "2026-06-11T16:00:00Z",
@@ -228,19 +204,19 @@ export const SEED_TICKETS: Ticket[] = [
       {
         timestamp: "2026-06-10T14:00:00Z",
         status: "Assigned",
-        updatedBy: "Sarah Jenkins",
-        comment: "Assigned task ticket to David Kim.",
+        updatedBy: "Administrator",
+        comment: "Assigned task ticket to Administrator.",
       },
       {
         timestamp: "2026-06-11T10:15:00Z",
         status: "In Progress",
-        updatedBy: "David Kim",
+        updatedBy: "Administrator",
         comment: "Applied configuration updates.",
       },
       {
         timestamp: "2026-06-11T15:30:00Z",
         status: "Resolved",
-        updatedBy: "David Kim",
+        updatedBy: "Administrator",
         comment: "Configurations set. Confirmed connection load tests passed.",
       },
       {
@@ -259,9 +235,9 @@ export const SEED_TASKS: Task[] = [
     title: "Prepare SLA Performance Report",
     description: "Analyze helpdesk ticket records and compile average resolution durations, SLA compliance scores, and resolution distributions for June.",
     taskCategory: "Administrative",
-    assignedBy: "U-1", // Sarah Jenkins
-    assignedTo: "U-3", // David Kim
-    dueDate: "2026-06-18", // 2 days in the future
+    assignedBy: "U-1", // Administrator
+    assignedTo: "U-1", // Administrator
+    dueDate: "2026-06-18",
     priority: "Medium",
     status: "In Progress",
     escalationStatus: "No",
@@ -274,13 +250,13 @@ export const SEED_TASKS: Task[] = [
     description: "Perform the annual security system audit of internal administrative activities, verify MFA activation rates, and log session terminations.",
     taskCategory: "Compliance",
     assignedBy: "U-1",
-    assignedTo: "U-3",
-    dueDate: "2026-06-14", // Past due date relative to 2026-06-16
+    assignedTo: "U-1",
+    dueDate: "2026-06-14",
     priority: "High",
     status: "Escalated",
     escalationStatus: "Yes",
     createdDate: "2026-06-10T08:00:00Z",
-    updatedDate: "2026-06-15T00:00:00Z", // Triggered automatically by escalation process
+    updatedDate: "2026-06-15T00:00:00Z",
   },
   {
     id: "TSK-203",
@@ -288,7 +264,7 @@ export const SEED_TASKS: Task[] = [
     description: "Consolidate the main corporate spreadsheet contacts for TechCorp Pro into the central support portal records.",
     taskCategory: "Operational",
     assignedBy: "U-1",
-    assignedTo: "U-3",
+    assignedTo: "U-1",
     dueDate: "2026-06-19",
     priority: "Low",
     status: "Assigned",
@@ -302,7 +278,7 @@ export const SEED_TASKS: Task[] = [
     description: "Coordinate with certificate vaults to refresh expiration configurations on API gateway routes.",
     taskCategory: "Support",
     assignedBy: "U-1",
-    assignedTo: "U-3",
+    assignedTo: "U-1",
     dueDate: "2026-06-15",
     priority: "Critical",
     status: "Completed",
@@ -317,16 +293,16 @@ export const SEED_TASKS: Task[] = [
 export const SEED_NOTIFICATIONS: Notification[] = [
   {
     id: "N-1",
-    userId: "U-3", // David Kim
+    userId: "U-1",
     notificationType: "Ticket Assignment",
     title: "New High Ticket Assigned",
-    message: "Ticket TKT-1003 'Locked out of production dashboard' has been assigned to you by Administrator Sarah Jenkins.",
+    message: "Ticket TKT-1003 'Locked out of production dashboard' has been assigned to you.",
     status: "Read",
     createdDate: "2026-06-15T11:10:00Z",
   },
   {
     id: "N-2",
-    userId: "U-3", // David Kim
+    userId: "U-1",
     notificationType: "Task Assignment",
     title: "New Administrative Task Assigned",
     message: "Task TSK-203 'Update Client Contact Information' has been assigned to you.",
@@ -335,16 +311,16 @@ export const SEED_NOTIFICATIONS: Notification[] = [
   },
   {
     id: "N-3",
-    userId: "U-2", // Manager Robert Chen
+    userId: "U-1",
     notificationType: "Escalation Alert",
     title: "Task TSK-202 Overdue Escalation",
-    message: "Task TSK-202 assigned to David Kim has passed its due date (2026-06-14) and is now Escalated.",
+    message: "Task TSK-202 has passed its due date (2026-06-14) and is now Escalated.",
     status: "Sent",
     createdDate: "2026-06-15T00:00:00Z",
   },
   {
     id: "N-4",
-    userId: "U-1", // Sarah Jenkins
+    userId: "U-1",
     notificationType: "Ticket Update",
     title: "New Ticket Received",
     message: "Client Alice Mercer has submitted a new Ticket TKT-1002 'Invoice details missing tax code'.",
@@ -357,51 +333,51 @@ export const SEED_AUDIT_LOGS: AuditLog[] = [
   {
     id: "LOG-001",
     userId: "U-1",
-    userFullName: "Sarah Jenkins",
-    action: "Account Creation",
-    entityType: "User",
-    entityId: "U-3",
-    timestamp: "2026-01-20T08:15:00Z",
-    description: "Sarah Jenkins provisioned user account for employee David Kim in department Support & Operations.",
+    userFullName: "Administrator",
+    action: "Admin Action",
+    entityType: "System",
+    entityId: "SYS-INIT",
+    timestamp: "2026-01-10T09:00:00Z",
+    description: "System initialized with primary Administrator account.",
   },
   {
     id: "LOG-002",
     userId: "U-1",
-    userFullName: "Sarah Jenkins",
+    userFullName: "Administrator",
     action: "Task Assignment",
     entityType: "Task",
     entityId: "TSK-202",
     timestamp: "2026-06-10T08:00:00Z",
-    description: "Task TSK-202 'Verify Security Compliance Logs' assigned to David Kim.",
+    description: "Task TSK-202 'Verify Security Compliance Logs' assigned.",
   },
   {
     id: "LOG-003",
-    userId: "U-3",
-    userFullName: "David Kim",
+    userId: "U-1",
+    userFullName: "Administrator",
     action: "Ticket Update",
     entityType: "Ticket",
     entityId: "TKT-1004",
     timestamp: "2026-06-15T14:45:00Z",
-    description: "David Kim resolved ticket TKT-1004: 'Customer gateway throwing 500 error'. Notes added.",
+    description: "Administrator resolved ticket TKT-1004: 'Customer gateway throwing 500 error'. Notes added.",
   },
   {
     id: "LOG-004",
-    userId: "U-3",
-    userFullName: "David Kim",
+    userId: "U-1",
+    userFullName: "Administrator",
     action: "Task Update",
     entityType: "Task",
     entityId: "TSK-204",
     timestamp: "2026-06-15T15:30:00Z",
-    description: "David Kim marked task TSK-204 'Renew SSL Certificates for Gateway' as Completed.",
+    description: "Administrator marked task TSK-204 'Renew SSL Certificates for Gateway' as Completed.",
   },
   {
     id: "LOG-005",
     userId: "U-1",
-    userFullName: "Sarah Jenkins",
+    userFullName: "Administrator",
     action: "Account Creation",
     entityType: "Client",
     entityId: "C-4",
     timestamp: "2026-06-15T16:30:00Z",
-    description: "Sarah Jenkins created Pending client portal profile for Delta Systems (Marcus Vance).",
+    description: "Administrator created Pending client portal profile for Delta Systems (Marcus Vance).",
   },
 ];
