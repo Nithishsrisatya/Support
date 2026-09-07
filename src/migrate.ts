@@ -10,239 +10,154 @@ import {
 
 async function migrate() {
   try {
-    console.log("🚀 Starting migration...");
+    console.log("🚀 Starting database migration...");
 
-    // Users
-    for (const user of SEED_USERS) {
-      await pool.query(
-        `
-        INSERT INTO users (
-          id,
-          full_name,
-          email,
-          password_hash,
-          role,
-          department,
-          manager_id,
-          status,
-          created_date,
-          updated_date
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        ON CONFLICT (id) DO NOTHING
-        `,
-        [
-          user.id,
-          user.fullName,
-          user.email,
-          user.passwordHash,
-          user.role,
-          user.department,
-          user.managerId,
-          user.status,
-          user.createdDate,
-          user.updatedDate,
-        ]
-      );
-    }
+    // =========================================================================
+    // 1. CORE SCHEMA CREATION (Parent tables first, then child tables)
+    // =========================================================================
 
-    console.log("✅ Users imported");
-
-    // Clients
-    for (const client of SEED_CLIENTS) {
-      await pool.query(
-        `
-        INSERT INTO clients (
-          id,
-          company_name,
-          contact_person,
-          email,
-          phone_number,
-          status,
-          created_date,
-          updated_date
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-        ON CONFLICT (id) DO NOTHING
-        `,
-        [
-          client.id,
-          client.companyName,
-          client.contactPerson,
-          client.email,
-          client.phoneNumber,
-          client.status,
-          client.createdDate,
-          client.updatedDate,
-        ]
-      );
-    }
-
-    console.log("✅ Clients imported");
-
-    // Tickets
-for (const ticket of SEED_TICKETS) {
-  await pool.query(
-    `
-    INSERT INTO tickets (
-      id,
-      subject,
-      description,
-      category,
-      priority,
-      status,
-      assigned_to,
-      client_id,
-      created_date,
-      updated_date,
-      resolution_summary,
-      resolution_date,
-      employee_notes,
-      satisfaction_rating,
-      satisfaction_notes
-    )
-    VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
-    )
-    ON CONFLICT (id) DO NOTHING
-    `,
-    [
-      ticket.id,
-      ticket.subject,
-      ticket.description,
-      ticket.category,
-      ticket.priority,
-      ticket.status,
-      ticket.assignedTo,
-      ticket.clientId,
-      ticket.createdDate,
-      ticket.updatedDate,
-      ticket.resolutionSummary ?? null,
-      ticket.resolutionDate ?? null,
-      ticket.employeeNotes ?? null,
-      ticket.satisfactionRating ?? null,
-      ticket.satisfactionNotes ?? null,
-    ]
-  );
-
-  // Ticket History
-  for (const history of ticket.history) {
-    await pool.query(
-      `
-      INSERT INTO ticket_history (
-        ticket_id,
-        timestamp,
-        status,
-        updated_by,
-        comment
+    // 1. Users Table
+    console.log("➡️ Creating users...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(50) PRIMARY KEY,
+        full_name VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        role VARCHAR(50) NOT NULL,
+        department VARCHAR(100),
+        manager_id VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+        status VARCHAR(50) NOT NULL DEFAULT 'Active',
+        first_login BOOLEAN DEFAULT false,
+        created_date TIMESTAMP DEFAULT NOW(),
+        updated_date TIMESTAMP DEFAULT NOW()
       )
-      VALUES ($1,$2,$3,$4,$5)
-      `,
-      [
-        ticket.id,
-        history.timestamp,
-        history.status,
-        history.updatedBy,
-        history.comment,
-      ]
-    );
-  }
-}
+    `);
+    console.log("✅ users created");
 
-console.log("✅ Tickets imported");
+    // 2. Clients Table
+    console.log("➡️ Creating clients...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS clients (
+        id VARCHAR(50) PRIMARY KEY,
+        company_name VARCHAR(255) NOT NULL,
+        company_domain VARCHAR(255),
+        contact_person VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        phone_number VARCHAR(50),
+        city VARCHAR(100),
+        status VARCHAR(50) NOT NULL DEFAULT 'Active',
+        password_hash VARCHAR(255),
+        "passwordHash" VARCHAR(255),
+        first_login BOOLEAN DEFAULT false,
+        created_date TIMESTAMP DEFAULT NOW(),
+        updated_date TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log("✅ clients created");
 
-    // Tasks
-    for (const task of SEED_TASKS) {
-      await pool.query(
-        `
-        INSERT INTO tasks (
-          id,
-          title,
-          description,
-          status,
-          assigned_to,
-          created_date,
-          updated_date
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-        ON CONFLICT (id) DO NOTHING
-        `,
-        [
-          task.id,
-          task.title,
-          task.description,
-          task.status,
-          task.assignedTo,
-          task.createdDate,
-          task.updatedDate,
+    // 3. Tickets Table
+    console.log("➡️ Creating tickets...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tickets (
+        id VARCHAR(50) PRIMARY KEY,
+        subject VARCHAR(500) NOT NULL,
+        description TEXT NOT NULL,
+        category VARCHAR(100) NOT NULL,
+        priority VARCHAR(50) NOT NULL DEFAULT 'Medium',
+        status VARCHAR(50) NOT NULL DEFAULT 'New',
+        assigned_to VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+        client_id VARCHAR(50) REFERENCES clients(id) ON DELETE CASCADE,
+        due_date TIMESTAMP DEFAULT NULL,
+        completed_at TIMESTAMP DEFAULT NULL,
+        is_overdue BOOLEAN DEFAULT false,
+        resolution_summary TEXT DEFAULT NULL,
+        resolution_date TIMESTAMP DEFAULT NULL,
+        employee_notes TEXT DEFAULT NULL,
+        satisfaction_rating INTEGER DEFAULT NULL,
+        satisfaction_notes TEXT DEFAULT NULL,
+        created_date TIMESTAMP DEFAULT NOW(),
+        updated_date TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log("✅ tickets created");
 
-        ]
-      );
-    }
-    // Notifications
-for (const notification of SEED_NOTIFICATIONS) {
-  await pool.query(
-    `
-    INSERT INTO notifications (
-      id,
-      user_id,
-      notification_type,
-      title,
-      message,
-      status,
-      created_date,
-      read_date
-    )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    ON CONFLICT (id) DO NOTHING
-    `,
-    [
-      notification.id,
-      notification.userId,
-      notification.notificationType,
-      notification.title,
-      notification.message,
-      notification.status,
-      notification.createdDate,
-      notification.readDate ?? null,
-    ]
-  );
-}
+    // 4. Ticket History Table
+    console.log("➡️ Creating ticket_history...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ticket_history (
+        id SERIAL PRIMARY KEY,
+        ticket_id VARCHAR(50) NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        timestamp TIMESTAMP DEFAULT NOW(),
+        status VARCHAR(50) NOT NULL,
+        updated_by VARCHAR(255) NOT NULL,
+        comment TEXT
+      )
+    `);
+    console.log("✅ ticket_history created");
 
-console.log("✅ Notifications imported");
-// Audit Logs
-for (const log of SEED_AUDIT_LOGS) {
-  await pool.query(
-    `
-    INSERT INTO audit_logs (
-      id,
-      user_id,
-      user_full_name,
-      action,
-      entity_type,
-      entity_id,
-      timestamp,
-      description
-    )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    ON CONFLICT (id) DO NOTHING
-    `,
-    [
-      log.id,
-      log.userId,
-      log.userFullName,
-      log.action,
-      log.entityType,
-      log.entityId,
-      log.timestamp,
-      log.description,
-    ]
-  );
-}
+    // 5. Tasks Table
+    console.log("➡️ Creating tasks...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id VARCHAR(50) PRIMARY KEY,
+        title VARCHAR(500) NOT NULL,
+        description TEXT,
+        task_category VARCHAR(100),
+        priority VARCHAR(50) NOT NULL DEFAULT 'Medium',
+        status VARCHAR(50) NOT NULL DEFAULT 'Pending',
+        assigned_to VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+        assigned_by VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+        start_date TIMESTAMP DEFAULT NULL,
+        due_date TIMESTAMP DEFAULT NULL,
+        completion_date TIMESTAMP DEFAULT NULL,
+        completed_at TIMESTAMP DEFAULT NULL,
+        completion_notes TEXT DEFAULT NULL,
+        escalation_status VARCHAR(50) DEFAULT 'No',
+        progress_percentage INTEGER DEFAULT 0,
+        review_status VARCHAR(50) DEFAULT NULL,
+        manager_notes TEXT DEFAULT NULL,
+        reviewed_by VARCHAR(50) DEFAULT NULL,
+        reviewed_date TIMESTAMP DEFAULT NULL,
+        created_date TIMESTAMP DEFAULT NOW(),
+        updated_date TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log("✅ tasks created");
 
-console.log("✅ Audit Logs imported");
+    // 6. Notifications Table
+    console.log("➡️ Creating notifications...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id VARCHAR(50) PRIMARY KEY,
+        user_id VARCHAR(50) NOT NULL,
+        notification_type VARCHAR(100) NOT NULL,
+        title VARCHAR(500) NOT NULL,
+        message TEXT NOT NULL,
+        status VARCHAR(50) NOT NULL DEFAULT 'Sent',
+        created_date TIMESTAMP DEFAULT NOW(),
+        read_date TIMESTAMP DEFAULT NULL
+      )
+    `);
+    console.log("✅ notifications created");
 
-    // Email Logs table
+    // 7. Audit Logs Table
+    console.log("➡️ Creating audit_logs...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id VARCHAR(50) PRIMARY KEY,
+        user_id VARCHAR(50),
+        user_full_name VARCHAR(255),
+        action VARCHAR(100) NOT NULL,
+        entity_type VARCHAR(100) NOT NULL,
+        entity_id VARCHAR(100) NOT NULL,
+        timestamp TIMESTAMP DEFAULT NOW(),
+        description TEXT
+      )
+    `);
+    console.log("✅ audit_logs created");
+
+    // 8. Email Logs Table
     console.log("➡️ Creating email_logs...");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS email_logs (
@@ -257,7 +172,7 @@ console.log("✅ Audit Logs imported");
     `);
     console.log("✅ email_logs created");
 
-    // Ticket Comments table
+    // 9. Ticket Comments Table
     console.log("➡️ Creating ticket_comments...");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ticket_comments (
@@ -273,7 +188,7 @@ console.log("✅ Audit Logs imported");
     `);
     console.log("✅ ticket_comments created");
 
-    // Ticket Attachments table
+    // 10. Ticket Attachments Table
     console.log("➡️ Creating ticket_attachments...");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ticket_attachments (
@@ -290,7 +205,7 @@ console.log("✅ Audit Logs imported");
     `);
     console.log("✅ ticket_attachments created");
 
-    // Task History table
+    // 11. Task History Table
     console.log("➡️ Creating task_history...");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS task_history (
@@ -305,7 +220,7 @@ console.log("✅ Audit Logs imported");
     `);
     console.log("✅ task_history created");
 
-    // Task Attachments table
+    // 12. Task Attachments Table
     console.log("➡️ Creating task_attachments...");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS task_attachments (
@@ -322,7 +237,7 @@ console.log("✅ Audit Logs imported");
     `);
     console.log("✅ task_attachments created");
 
-    // Task Progress Updates table
+    // 13. Task Progress Updates Table
     console.log("➡️ Creating task_progress_updates...");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS task_progress_updates (
@@ -337,32 +252,100 @@ console.log("✅ Audit Logs imported");
     `);
     console.log("✅ task_progress_updates created");
 
-// Add new columns to tasks table (if not exist - catch error gracefully)
+    // 14. Password Reset Tokens Table
+    console.log("➡️ Creating password_reset_tokens...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id VARCHAR(50) NOT NULL,
+        user_type VARCHAR(20) NOT NULL DEFAULT 'User',
+        email VARCHAR(255) NOT NULL,
+        token_hash VARCHAR(255) NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        used_at TIMESTAMP DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log("✅ password_reset_tokens created");
+
+    // 15. Deadline Notifications Table
+    console.log("➡️ Creating deadline_notifications...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS deadline_notifications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        item_type VARCHAR(20) NOT NULL,
+        item_id VARCHAR(50) NOT NULL,
+        stage VARCHAR(30) NOT NULL,
+        recipient_id VARCHAR(50) NOT NULL,
+        recipient_role VARCHAR(20) NOT NULL,
+        sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        CONSTRAINT uq_deadline_notification UNIQUE (item_type, item_id, stage, recipient_id)
+      )
+    `);
+    console.log("✅ deadline_notifications created");
+
+    // 16. Weekly Pending Work Notifications Table
+    console.log("➡️ Creating weekly_pending_work_notifications...");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS weekly_pending_work_notifications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        week_start DATE NOT NULL,
+        recipient_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_role VARCHAR(20) NOT NULL,
+        total_pending INTEGER NOT NULL DEFAULT 0,
+        overdue_count INTEGER NOT NULL DEFAULT 0,
+        sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        CONSTRAINT uq_weekly_pending_work_notification UNIQUE (week_start, recipient_id)
+      )
+    `);
+    console.log("✅ weekly_pending_work_notifications created");
+
+    // =========================================================================
+    // 2. BACKWARD-COMPATIBILITY SCHEMA UPDATES (for existing databases)
+    // =========================================================================
     try {
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS progress_percentage INTEGER DEFAULT 0`);
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_status VARCHAR(50) DEFAULT NULL`);
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS manager_notes TEXT DEFAULT NULL`);
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(50) DEFAULT NULL`);
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reviewed_date TIMESTAMP DEFAULT NULL`);
-      // Phase 1: Deadline management columns
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_date TIMESTAMP DEFAULT NULL`);
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP DEFAULT NULL`);
-      console.log("✅ Task table new columns added");
+      console.log("✅ Task table columns verified");
     } catch (err) {
-      console.log("  ℹ️  Some columns may already exist (safe to continue)");
+      console.log("  ℹ️  Some task columns may already exist (safe to continue)");
     }
 
-    // Phase 1: Add deadline columns to tickets table
     try {
       await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS due_date TIMESTAMP DEFAULT NULL`);
       await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP DEFAULT NULL`);
       await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS is_overdue BOOLEAN DEFAULT false`);
-      console.log("✅ Ticket table deadline columns added");
+      console.log("✅ Ticket table deadline columns verified");
     } catch (err) {
       console.log("  ℹ️  Some ticket columns may already exist (safe to continue)");
     }
 
-    // Indexes
+    try {
+      await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS "passwordHash" VARCHAR(255) DEFAULT NULL`);
+      await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255) DEFAULT NULL`);
+      await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS first_login BOOLEAN DEFAULT false`);
+      await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS company_domain VARCHAR(255) DEFAULT NULL`);
+      await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT NULL`);
+      console.log("✅ Client table columns verified");
+    } catch (err) {
+      console.log("  ℹ️  Some client columns may already exist (safe to continue)");
+    }
+
+    try {
+      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS first_login BOOLEAN DEFAULT false`);
+      console.log("✅ User table columns verified");
+    } catch (err) {
+      console.log("  ℹ️  Some user columns may already exist (safe to continue)");
+    }
+
+    // =========================================================================
+    // 3. INDEXES CREATION
+    // =========================================================================
     console.log("➡️ Creating indexes...");
     try {
       // Users
@@ -372,6 +355,7 @@ console.log("✅ Audit Logs imported");
 
       // Clients
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email)`);
 
       // Tickets
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_tickets_assigned_to ON tickets(assigned_to)`);
@@ -407,63 +391,257 @@ console.log("✅ Audit Logs imported");
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_notifications_created_date ON notifications(created_date)`);
 
       // Password Reset Tokens
-      console.log("➡️ Creating password_reset_tokens...");
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS password_reset_tokens (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          user_id VARCHAR(50) NOT NULL,
-          user_type VARCHAR(20) NOT NULL DEFAULT 'User',
-          email VARCHAR(255) NOT NULL,
-          token_hash VARCHAR(255) NOT NULL,
-          expires_at TIMESTAMP NOT NULL,
-          used_at TIMESTAMP DEFAULT NULL,
-          created_at TIMESTAMP DEFAULT NOW()
-        )
-      `);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token_hash ON password_reset_tokens(token_hash)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_email ON password_reset_tokens(email)`);
-      console.log("✅ password_reset_tokens created");
 
-      // Deadline Notifications table
-      console.log("➡️ Creating deadline_notifications...");
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS deadline_notifications (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          item_type VARCHAR(20) NOT NULL,
-          item_id VARCHAR(50) NOT NULL,
-          stage VARCHAR(30) NOT NULL,
-          recipient_id VARCHAR(50) NOT NULL,
-          recipient_role VARCHAR(20) NOT NULL,
-          sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
-          CONSTRAINT uq_deadline_notification UNIQUE (item_type, item_id, stage, recipient_id)
-        )
-      `);
+      // Deadline Notifications
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_deadline_notifications_item ON deadline_notifications(item_type, item_id)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_deadline_notifications_recipient ON deadline_notifications(recipient_id)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_deadline_notifications_stage ON deadline_notifications(stage)`);
-      console.log("✅ deadline_notifications created");
 
-      // Weekly Pending Work Notifications table
-      console.log("➡️ Creating weekly_pending_work_notifications...");
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS weekly_pending_work_notifications (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          week_start DATE NOT NULL,
-          recipient_id VARCHAR(50) NOT NULL,
-          recipient_role VARCHAR(20) NOT NULL,
-          sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
-          CONSTRAINT uq_weekly_pending_work_notification UNIQUE (week_start, recipient_id)
-        )
-      `);
+      // Weekly Pending Work Notifications
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_weekly_pending_work_week ON weekly_pending_work_notifications(week_start)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_weekly_pending_work_recipient ON weekly_pending_work_notifications(recipient_id)`);
-      console.log("✅ weekly_pending_work_notifications created");
 
       console.log("✅ Indexes created");
     } catch (err) {
       console.log("  ℹ️  Some indexes may already exist (safe to continue)");
     }
+
+    // =========================================================================
+    // 4. SEED DATA INSERTION (ON CONFLICT (id) DO NOTHING)
+    // =========================================================================
+    console.log("➡️ Seeding initial data...");
+
+    // Users
+    for (const user of SEED_USERS) {
+      await pool.query(
+        `
+        INSERT INTO users (
+          id,
+          full_name,
+          email,
+          password_hash,
+          role,
+          department,
+          manager_id,
+          status,
+          created_date,
+          updated_date
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT (id) DO NOTHING
+        `,
+        [
+          user.id,
+          user.fullName,
+          user.email,
+          user.passwordHash,
+          user.role,
+          user.department,
+          user.managerId,
+          user.status,
+          user.createdDate,
+          user.updatedDate,
+        ]
+      );
+    }
+    console.log("✅ Users seeded");
+
+    // Clients
+    for (const client of SEED_CLIENTS) {
+      await pool.query(
+        `
+        INSERT INTO clients (
+          id,
+          company_name,
+          contact_person,
+          email,
+          phone_number,
+          status,
+          created_date,
+          updated_date
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        ON CONFLICT (id) DO NOTHING
+        `,
+        [
+          client.id,
+          client.companyName,
+          client.contactPerson,
+          client.email,
+          client.phoneNumber,
+          client.status,
+          client.createdDate,
+          client.updatedDate,
+        ]
+      );
+    }
+    console.log("✅ Clients seeded");
+
+    // Tickets & Ticket History
+    for (const ticket of SEED_TICKETS) {
+      await pool.query(
+        `
+        INSERT INTO tickets (
+          id,
+          subject,
+          description,
+          category,
+          priority,
+          status,
+          assigned_to,
+          client_id,
+          created_date,
+          updated_date,
+          resolution_summary,
+          resolution_date,
+          employee_notes,
+          satisfaction_rating,
+          satisfaction_notes
+        )
+        VALUES (
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+        )
+        ON CONFLICT (id) DO NOTHING
+        `,
+        [
+          ticket.id,
+          ticket.subject,
+          ticket.description,
+          ticket.category,
+          ticket.priority,
+          ticket.status,
+          ticket.assignedTo,
+          ticket.clientId,
+          ticket.createdDate,
+          ticket.updatedDate,
+          ticket.resolutionSummary ?? null,
+          ticket.resolutionDate ?? null,
+          ticket.employeeNotes ?? null,
+          ticket.satisfactionRating ?? null,
+          ticket.satisfactionNotes ?? null,
+        ]
+      );
+
+      // Ticket History
+      if (ticket.history && Array.isArray(ticket.history)) {
+        for (const history of ticket.history) {
+          await pool.query(
+            `
+            INSERT INTO ticket_history (
+              ticket_id,
+              timestamp,
+              status,
+              updated_by,
+              comment
+            )
+            VALUES ($1,$2,$3,$4,$5)
+            `,
+            [
+              ticket.id,
+              history.timestamp,
+              history.status,
+              history.updatedBy,
+              history.comment,
+            ]
+          );
+        }
+      }
+    }
+    console.log("✅ Tickets seeded");
+
+    // Tasks
+    for (const task of SEED_TASKS) {
+      await pool.query(
+        `
+        INSERT INTO tasks (
+          id,
+          title,
+          description,
+          status,
+          assigned_to,
+          created_date,
+          updated_date
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        ON CONFLICT (id) DO NOTHING
+        `,
+        [
+          task.id,
+          task.title,
+          task.description,
+          task.status,
+          task.assignedTo,
+          task.createdDate,
+          task.updatedDate,
+        ]
+      );
+    }
+    console.log("✅ Tasks seeded");
+
+    // Notifications
+    for (const notification of SEED_NOTIFICATIONS) {
+      await pool.query(
+        `
+        INSERT INTO notifications (
+          id,
+          user_id,
+          notification_type,
+          title,
+          message,
+          status,
+          created_date,
+          read_date
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        ON CONFLICT (id) DO NOTHING
+        `,
+        [
+          notification.id,
+          notification.userId,
+          notification.notificationType,
+          notification.title,
+          notification.message,
+          notification.status,
+          notification.createdDate,
+          notification.readDate ?? null,
+        ]
+      );
+    }
+    console.log("✅ Notifications seeded");
+
+    // Audit Logs
+    for (const log of SEED_AUDIT_LOGS) {
+      await pool.query(
+        `
+        INSERT INTO audit_logs (
+          id,
+          user_id,
+          user_full_name,
+          action,
+          entity_type,
+          entity_id,
+          timestamp,
+          description
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        ON CONFLICT (id) DO NOTHING
+        `,
+        [
+          log.id,
+          log.userId,
+          log.userFullName,
+          log.action,
+          log.entityType,
+          log.entityId,
+          log.timestamp,
+          log.description,
+        ]
+      );
+    }
+    console.log("✅ Audit Logs seeded");
 
     console.log("🎉 Migration completed successfully!");
 
