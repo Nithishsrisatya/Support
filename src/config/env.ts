@@ -116,12 +116,13 @@ export function validateProductionEnv(): void {
   // Validate CORS / Frontend URL
   getCorsOrigins();
 
-  // Validate SMTP configuration
+  // Validate Email configuration (Brevo HTTPS API or SMTP)
+  const hasBrevo = !!process.env.BREVO_API_KEY?.trim();
   const smtpVars = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"];
   const missingSmtp = smtpVars.filter((v) => !process.env[v] || process.env[v]?.trim() === "");
-  if (missingSmtp.length > 0) {
+  if (!hasBrevo && missingSmtp.length > 0) {
     console.warn(
-      `⚠️ [CONFIG WARNING] SMTP environment variables not fully configured: ${missingSmtp.join(", ")}. Email sending will run in preview/fallback mode.`
+      `⚠️ [CONFIG WARNING] Neither BREVO_API_KEY nor full SMTP environment variables (${missingSmtp.join(", ")}) are configured. Email sending will run in preview/fallback mode.`
     );
   }
 }
