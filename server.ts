@@ -161,30 +161,6 @@ app.get("/api/state", authenticateToken, authorizeRoles(["Administrator"]), asyn
 });
 
 // -----------------------------------------------------
-// Synchronization API
-// -----------------------------------------------------
-
-app.post("/api/sync", async (req, res) => {
-  try {
-    // Future implementation:
-    // Save all updates to PostgreSQL
-
-    res.json({
-      success: true,
-      message: "Synchronization completed successfully.",
-      sentEmails: [],
-    });
-  } catch (error) {
-    console.error("Synchronization Error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Synchronization failed.",
-    });
-  }
-});
-
-// -----------------------------------------------------
 // Health Check
 // -----------------------------------------------------
 

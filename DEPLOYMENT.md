@@ -17,32 +17,33 @@ Internet (HTTPS: 443)
        │
        ▼
 [ Node.js Process (PM2) ] ── dist/server.mjs (Express API + Vite Static Host)
-  ├── API Routers (/api/*)
-  ├── In-process Cron Schedulers (Daily reminders, Overdue SLA alerts)
-  └── Helmet security headers & rate limiting
-       │
-       ├───> [ PostgreSQL 15+ ] ── Relational Database (SSL enabled for Cloud)
-       ├───> [ Persistent Disk ] ── uploads/ (Mounted persistent directory)
-       └───> [ Outgoing SMTP ] ── Transactional email provider (Mailgun/SES/SendGrid)
+   ├── API Routers (/api/*)
+   ├── In-process Cron Schedulers (Daily reminders, Overdue SLA alerts)
+   └── Helmet security headers & rate limiting
+        │
+        ├───> [ PostgreSQL 15+ ] ── Relational Database (SSL enabled for Cloud)
+        ├───> [ Persistent Disk ] ── uploads/ (Mounted persistent directory)
+        ├───> [ Brevo REST API ] ── Outbound HTTPS / Port 443 (Recommended for Render Free / Production)
+        └───> [ Nodemailer SMTP ] ── Outbound Port 587/465 (Local development fallback)
 ```
 
 ---
 
 ## 2. Server Requirements
 
-- **Operating System:** Ubuntu 22.04 / 24.04 LTS (recommended)
+- **Operating System:** Ubuntu 22.04 / 24.04 LTS (recommended) or PaaS (Render / Railway / Fly.io)
 - **Node.js:** Node.js 20 LTS or higher
 - **Package Manager:** npm 10+
-- **Process Manager:** PM2 (`npm install -g pm2`)
+- **Process Manager:** PM2 (`npm install -g pm2`) or PaaS Web Service
 - **Web Server:** Nginx (`sudo apt install nginx certbot python3-certbot-nginx`)
-- **Database:** PostgreSQL 15+ (Local or Cloud-managed e.g. AWS RDS, Supabase, Neon)
+- **Database:** PostgreSQL 15+ (Local or Cloud-managed e.g. AWS RDS, Supabase, Neon, Render PostgreSQL)
 - **RAM / CPU:** Minimum 2 vCPU, 4GB RAM (handles 1,000+ active users)
 
 ---
 
 ## 3. Environment Variables Reference
 
-Create a `.env` file on the production server in the application root directory (`/var/www/complify/.env`).
+Create a `.env` file on the production server in the application root directory (`/var/www/complify/.env`) or configure environment variables in your PaaS dashboard (e.g. Render Environment).
 
 > [!CAUTION]
 > **NEVER commit `.env` to Git or version control.** Always populate `.env` directly on the target production server via secure secret injection.
@@ -54,14 +55,15 @@ Create a `.env` file on the production server in the application root directory 
 | `JWT_SECRET` | High-entropy random secret for signing JWT access tokens (min 32 chars). | `openssl rand -base64 32` |
 | `DB_PASSWORD` | PostgreSQL database user password (if using granular vars). | `secure_pg_password_here` |
 | `DATABASE_URL` | Full PostgreSQL connection URI (alternative to granular vars). | `postgresql://user:pass@host:5432/db?sslmode=require` |
-| `SMTP_PASS` | Password / API secret for your outgoing SMTP relay. | `your_smtp_api_key` |
+| `BREVO_API_KEY` | **Recommended Production (Render Free):** Brevo REST API Key (`xkeysib-...`) sending over HTTPS (Port 443). Bypasses cloud SMTP port blocks. | `xkeysib_your_brevo_api_key_here` |
+| `SMTP_PASS` | Password / API secret for outgoing SMTP relay (used for local development). | `your_smtp_api_key` |
 
 ### B. Configuration Variables (Non-Secret)
 
 | Variable | Description | Recommended Production Value |
 |---|---|---|
 | `NODE_ENV` | Runtime environment. Enables production optimizations. | `production` |
-| `PORT` | Local port Express listens on (behind Nginx). | `3000` |
+| `PORT` | Local port Express listens on (behind Nginx or PaaS router). | `3000` |
 | `DB_HOST` | PostgreSQL hostname / IP address. | `127.0.0.1` or cloud host |
 | `DB_PORT` | PostgreSQL port. | `5432` |
 | `DB_NAME` | PostgreSQL database name. | `complify` |
@@ -72,10 +74,12 @@ Create a `.env` file on the production server in the application root directory 
 | `DB_CONNECTION_TIMEOUT` | Connection acquisition timeout in milliseconds. | `5000` |
 | `FRONTEND_URL` | Canonical public HTTPS domain for email links and portal access. | `https://support.yourcompany.com` |
 | `CORS_ORIGIN` | Allowed cross-origin domains (comma-separated if multiple). | `https://support.yourcompany.com` |
-| `SMTP_HOST` | Outgoing SMTP mail server host. | `smtp.mailgun.org` / `smtp.sendgrid.net` |
+| `EMAIL_FROM` | Verified sender address shown in email headers. | `Complify Support <knithishsrisatya@gmail.com>` |
+| `BREVO_SENDER_NAME` | *(Optional)* Custom sender display name for Brevo API. | `Complify Support` |
+| `BREVO_SENDER_EMAIL` | *(Optional)* Verified sender email for Brevo API. | `knithishsrisatya@gmail.com` |
+| `SMTP_HOST` | Outgoing SMTP mail server host (local development fallback). | `smtp-relay.brevo.com` / `localhost` |
 | `SMTP_PORT` | SMTP port (`465` for SSL, `587` for STARTTLS). | `587` |
-| `SMTP_USER` | SMTP username or API user. | `postmaster@yourcompany.com` |
-| `EMAIL_FROM` | Verified sender address shown in email headers. | `Complify Support <noreply@yourcompany.com>` |
+| `SMTP_USER` | SMTP username or API user (local development fallback). | `postmaster@yourcompany.com` |
 | `UPLOAD_DIR` | Absolute path for persistent file storage. | `/var/www/complify/uploads/tickets` |
 
 ---

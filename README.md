@@ -43,7 +43,7 @@ A modern, role-based support, ticket, task, client, deadline, notification, repo
 - **Automated Deadline Notifications:** Scheduled background jobs evaluating due dates and dispatching email and in-app alerts for upcoming, due today, and overdue items.
 - **Weekly Pending-Work Summaries:** Automated Monday morning workload digests sent to employees and managers summarizing pending and overdue responsibilities.
 - **Reports & Dashboard Analytics:** Visual KPIs, ticket and task status breakdowns, priority distribution charts, employee workload tables, and exportable summary reports.
-- **Email Infrastructure & Logging:** Centralized transactional email dispatch via SMTP with development preview fallback and full database email logging.
+- **Email Infrastructure & Logging:** Centralized transactional email dispatch via Brevo REST API (HTTPS Port 443, recommended for Render Free / cloud production) with Nodemailer SMTP fallback for local development, development preview fallback, and full database email logging.
 
 ---
 
@@ -85,7 +85,6 @@ The deadline engine provides automated tracking and proactive alerts across the 
   - Tailwind CSS
   - Lucide React (Icons)
   - Recharts (Data visualization & dashboard charts)
-  - Framer Motion (Transitions & animations)
 - **Backend:**
   - Node.js & Express
   - TypeScript (via TSX in development, ESBuild in production)
@@ -95,7 +94,7 @@ The deadline engine provides automated tracking and proactive alerts across the 
   - Security (`helmet`, `express-rate-limit`, `cors`)
   - File Uploads (`multer`)
   - Cron Scheduling (`node-cron`)
-  - Email Services (`nodemailer`)
+  - Email Services (Brevo REST API over HTTPS / Nodemailer SMTP fallback)
 
 ---
 
@@ -178,7 +177,7 @@ Key configuration groups:
 - **Database:** `DATABASE_URL` (or granular `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`, `DB_POOL_MAX`)
 - **Authentication:** `JWT_SECRET`, `JWT_EXPIRES_IN`
 - **CORS & Domain:** `FRONTEND_URL`, `CORS_ORIGIN`
-- **SMTP Email:** `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`
+- **Email Configuration:** `BREVO_API_KEY`, `EMAIL_FROM`, `BREVO_SENDER_NAME`, `BREVO_SENDER_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`
 - **Storage & Limits:** `UPLOAD_DIR`, `AUTH_RATE_LIMIT_MAX`, `UPLOAD_RATE_LIMIT_MAX`, `API_RATE_LIMIT_MAX`
 
 > **Note:** Never commit the `.env` file or sensitive credentials to version control.
