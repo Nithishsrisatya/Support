@@ -132,16 +132,15 @@ describe("Task Assignment Email Flow Hardening", () => {
     assert.ok(data.task.id);
 
     // Wait a tick for asynchronous email query to complete
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 120));
 
-    assert.strictEqual(dispatchedEmails.length, 1);
-    const email = dispatchedEmails[0];
-    assert.strictEqual(email.to, empAEmail);
-    assert.ok(email.rawSubject.includes("New Task Assigned: Deploy SSL Certificate"));
-    assert.ok(email.html.includes("Employee Alpha"));
-    assert.ok(email.html.includes(data.task.id));
-    assert.ok(email.html.includes("Install wildcard certificate"));
-    assert.ok(email.html.includes("High"));
+    const empEmailRecord = dispatchedEmails.find((e) => e.to === empAEmail);
+    assert.ok(empEmailRecord, "Employee Alpha must receive assignment email");
+    assert.ok(empEmailRecord.rawSubject.includes("New Task Assigned: Deploy SSL Certificate"));
+    assert.ok(empEmailRecord.html.includes("Employee Alpha"));
+    assert.ok(empEmailRecord.html.includes(data.task.id));
+    assert.ok(empEmailRecord.html.includes("Install wildcard certificate"));
+    assert.ok(empEmailRecord.html.includes("High"));
   });
 
   // ──────────────────────────────────────────────
@@ -164,9 +163,12 @@ describe("Task Assignment Email Flow Hardening", () => {
     });
 
     assert.strictEqual(res.status, 201);
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 120));
 
-    assert.strictEqual(dispatchedEmails.length, 0);
+    const assignedEmails = dispatchedEmails.filter((e) =>
+      e.rawSubject.includes("New Task Assigned")
+    );
+    assert.strictEqual(assignedEmails.length, 0);
   });
 
   // ──────────────────────────────────────────────
@@ -191,6 +193,7 @@ describe("Task Assignment Email Flow Hardening", () => {
 
     const createData = await createRes.json();
     const taskId = createData.task.id;
+    await new Promise((r) => setTimeout(r, 120));
     dispatchedEmails.length = 0;
 
     // Now assign it to Employee A
@@ -206,12 +209,15 @@ describe("Task Assignment Email Flow Hardening", () => {
     });
 
     assert.strictEqual(assignRes.status, 200);
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 120));
 
-    assert.strictEqual(dispatchedEmails.length, 1);
-    assert.strictEqual(dispatchedEmails[0].to, empAEmail);
-    assert.ok(dispatchedEmails[0].html.includes("Employee Alpha"));
-    assert.ok(dispatchedEmails[0].html.includes("Setup Prometheus Exporter"));
+    const assignedEmails = dispatchedEmails.filter((e) =>
+      e.rawSubject.includes("New Task Assigned")
+    );
+    assert.strictEqual(assignedEmails.length, 1);
+    assert.strictEqual(assignedEmails[0].to, empAEmail);
+    assert.ok(assignedEmails[0].html.includes("Employee Alpha"));
+    assert.ok(assignedEmails[0].html.includes("Setup Prometheus Exporter"));
   });
 
   // ──────────────────────────────────────────────

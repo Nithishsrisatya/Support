@@ -714,4 +714,94 @@ export function managerWeeklyPendingWorkEmailTemplate(params: ManagerWeeklyPendi
 `;
 }
 
+// ──────────────────────────────────────────────
+// ADMINISTRATOR CREATION NOTIFICATION TEMPLATES
+// ──────────────────────────────────────────────
+
+export interface AdminNewTicketEmailParams {
+  adminName: string;
+  ticketId: string;
+  subject: string;
+  priority: string;
+  category?: string | null;
+  clientName?: string | null;
+  description?: string | null;
+  createdAt?: string | Date | null;
+}
+
+export function adminNewTicketTemplate(params: AdminNewTicketEmailParams): string {
+  const portalLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/manager-dashboard`;
+  const priorityColor = params.priority === "Critical" ? "#dc2626" : params.priority === "High" ? "#ea580c" : "#4f46e5";
+
+  return `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+  <div style="border-bottom: 2px solid #f4f4f5; padding-bottom: 15px; margin-bottom: 20px;">
+    <h2 style="color: #18181b; margin: 0;">New Support Ticket Created</h2>
+    <p style="color: #71717a; margin: 5px 0 0; font-size: 13px;">Administrator Notification Alert</p>
+  </div>
+  <p>Hello ${escapeHtml(params.adminName)},</p>
+  <p>A new customer support ticket has been logged in the system and requires operational review.</p>
+  <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 20px 0;">
+    <p style="margin: 0 0 10px 0;"><strong>Ticket ID:</strong> <span style="font-family: monospace; font-weight: bold;">${escapeHtml(params.ticketId)}</span></p>
+    <p style="margin: 0 0 10px 0;"><strong>Subject:</strong> ${escapeHtml(params.subject)}</p>
+    <p style="margin: 0 0 10px 0;"><strong>Priority:</strong> <span style="color: ${priorityColor}; font-weight: bold;">${escapeHtml(params.priority)}</span></p>
+    ${params.category ? `<p style="margin: 0 0 10px 0;"><strong>Category:</strong> ${escapeHtml(params.category)}</p>` : ""}
+    ${params.clientName ? `<p style="margin: 0 0 10px 0;"><strong>Client / Company:</strong> ${escapeHtml(params.clientName)}</p>` : ""}
+    ${params.description ? `<p style="margin: 0 0 10px 0;"><strong>Description:</strong> ${escapeHtml(params.description)}</p>` : ""}
+  </div>
+  <p>Review this ticket in your administration workspace:</p>
+  <div style="margin: 20px 0;">
+    <a href="${sanitizeUrl(portalLink)}" style="background-color: #4f46e5; color: white; text-decoration: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; display: inline-block;">
+      Open Management Workspace
+    </a>
+  </div>
+  <p style="font-size: 12px; color: #71717a; margin-top: 30px;">Complify Global Support System</p>
+</div>
+`;
+}
+
+export interface AdminNewTaskEmailParams {
+  adminName: string;
+  taskId: string;
+  title: string;
+  priority: string;
+  category?: string | null;
+  assignedEmployeeName?: string | null;
+  dueDate?: string | Date | null;
+  description?: string | null;
+}
+
+export function adminNewTaskTemplate(params: AdminNewTaskEmailParams): string {
+  const portalLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/tasks`;
+  const formattedDueDate = params.dueDate ? new Date(params.dueDate).toLocaleDateString() : "No deadline set";
+  const priorityColor = params.priority === "Critical" ? "#dc2626" : params.priority === "High" ? "#ea580c" : "#4f46e5";
+
+  return `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+  <div style="border-bottom: 2px solid #f4f4f5; padding-bottom: 15px; margin-bottom: 20px;">
+    <h2 style="color: #18181b; margin: 0;">New Internal Task Created</h2>
+    <p style="color: #71717a; margin: 5px 0 0; font-size: 13px;">Administrator Notification Alert</p>
+  </div>
+  <p>Hello ${escapeHtml(params.adminName)},</p>
+  <p>A new operational task has been created in Complify Support.</p>
+  <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 20px 0;">
+    <p style="margin: 0 0 10px 0;"><strong>Task Ref:</strong> <span style="font-family: monospace; font-weight: bold;">${escapeHtml(params.taskId)}</span></p>
+    <p style="margin: 0 0 10px 0;"><strong>Title:</strong> ${escapeHtml(params.title)}</p>
+    <p style="margin: 0 0 10px 0;"><strong>Priority:</strong> <span style="color: ${priorityColor}; font-weight: bold;">${escapeHtml(params.priority)}</span></p>
+    ${params.category ? `<p style="margin: 0 0 10px 0;"><strong>Category:</strong> ${escapeHtml(params.category)}</p>` : ""}
+    <p style="margin: 0 0 10px 0;"><strong>Assigned To:</strong> ${escapeHtml(params.assignedEmployeeName || "Unassigned")}</p>
+    <p style="margin: 0 0 10px 0;"><strong>Deadline:</strong> ${escapeHtml(formattedDueDate)}</p>
+    ${params.description ? `<p style="margin: 0;"><strong>Description:</strong> ${escapeHtml(params.description)}</p>` : ""}
+  </div>
+  <p>Review this task in your administration workspace:</p>
+  <div style="margin: 20px 0;">
+    <a href="${sanitizeUrl(portalLink)}" style="background-color: #4f46e5; color: white; text-decoration: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; display: inline-block;">
+      Open Task Workspace
+    </a>
+  </div>
+  <p style="font-size: 12px; color: #71717a; margin-top: 30px;">Complify Global Support System</p>
+</div>
+`;
+}
+
 

@@ -35,6 +35,7 @@ import {
   ticketClosedTemplate,
   overdueTicketReminderTemplate,
   slaReminderTemplate,
+  adminNewTicketTemplate,
 } from "../templates/operationalEmails";
 import { pool } from "../db";
 import {
@@ -51,6 +52,7 @@ import { logAuditEvent } from "../services/auditLogService";
 import { uploadLimiter } from "../middleware/rateLimiter";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import {
   isPlainObject,
   isNonEmptyString,
@@ -440,24 +442,95 @@ router.post("/", authenticateToken,
 
     const ticket = await createTicket(allowed);
 
-    // ✉️ Email trigger: Ticket Created (notify client)
-    if (ticket && ticket.client_id) {
-      pool.query(
-        `SELECT contact_person AS "contactPerson", company_name AS "companyName", email FROM clients WHERE id = $1`,
-        [ticket.client_id]
-      ).then(clientRes => {
-        if (clientRes.rows.length > 0) {
-          const client = clientRes.rows[0];
-          const html = ticketCreatedTemplate(
-            client.contactPerson || client.contact_person,
-            ticket.id,
-            ticket.subject,
-            client.companyName || client.company_name
+    // ✉️ Non-blocking notifications (Client email & Administrator notifications)
+    (async () => {
+      let clientCompanyName: string | null = null;
+      if (ticket && ticket.client_id) {
+        try {
+          const clientRes = await pool.query(
+            `SELECT contact_person AS "contactPerson", company_name AS "companyName", email FROM clients WHERE id = $1`,
+            [ticket.client_id]
           );
-          sendEmail(client.email, `Ticket Created: ${ticket.subject}`, html);
+          if (clientRes.rows.length > 0) {
+            const client = clientRes.rows[0];
+            clientCompanyName = client.companyName || client.company_name || null;
+            const html = ticketCreatedTemplate(
+              client.contactPerson || client.contact_person,
+              ticket.id,
+              ticket.subject,
+              clientCompanyName || "Valued Client"
+            );
+            sendEmail(client.email, `Ticket Created: ${ticket.subject}`, html).catch(err =>
+              console.error("Ticket created client email failed:", err)
+            );
+          }
+        } catch (clientErr) {
+          console.error("Ticket created client query failed:", clientErr);
         }
-      }).catch(err => console.error("Ticket created email failed:", err));
-    }
+      }
+
+      // 🔔 Administrator Notifications (In-app + Email to all active Administrators)
+      try {
+        const adminsRes = await pool.query(
+          `SELECT id, full_name AS "fullName", email FROM users WHERE role = 'Administrator' AND status = 'Active'`
+        );
+        const clientInfoStr = clientCompanyName ? ` from ${clientCompanyName}` : "";
+
+        // A. Fast bulk insert in-app notifications in a single database query
+        if (adminsRes.rows.length > 0) {
+          try {
+            const notifValues: any[] = [];
+            const notifPlaceholders = adminsRes.rows.map((admin, idx) => {
+              const offset = idx * 6;
+              notifValues.push(
+                `N-${crypto.randomBytes(8).toString("hex")}`,
+                admin.id,
+                "Ticket Update",
+                `New Ticket Created: ${ticket.id}`,
+                `New ticket "${ticket.subject}" (${ticket.priority} priority)${clientInfoStr} requires attention.`,
+                "Sent"
+              );
+              return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, NOW())`;
+            });
+
+            await pool.query(
+              `INSERT INTO notifications (id, user_id, notification_type, title, message, status, created_date)
+               VALUES ${notifPlaceholders.join(", ")}`,
+              notifValues
+            );
+          } catch (notifErr) {
+            console.error(`Failed to bulk create admin in-app notifications for ticket ${ticket.id}:`, notifErr);
+          }
+        }
+
+        // B. Concurrent email dispatch
+        await Promise.allSettled(
+          adminsRes.rows.map(async (admin) => {
+            try {
+              const adminHtml = adminNewTicketTemplate({
+                adminName: admin.fullName,
+                ticketId: ticket.id,
+                subject: ticket.subject,
+                priority: ticket.priority,
+                category: ticket.category,
+                clientName: clientCompanyName,
+                description: ticket.description,
+                createdAt: ticket.created_date || ticket.createdDate || new Date().toISOString(),
+              });
+              await sendEmail(
+                admin.email,
+                `[Complify] New Support Ticket Created: ${ticket.subject}`,
+                adminHtml
+              );
+            } catch (emailErr) {
+              console.error(`Failed to send admin ticket email to ${admin.email}:`, emailErr);
+            }
+          })
+        );
+      } catch (adminErr) {
+        console.error("Failed to query administrators for ticket notification:", adminErr);
+      }
+    })().catch(err => console.error("Ticket post-creation notifications failed:", err));
 
     res.status(201).json({ success: true, ticket });
 

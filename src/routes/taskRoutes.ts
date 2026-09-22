@@ -44,12 +44,14 @@ import {
   escalationTemplate,
   taskReminderTemplate,
   taskUpdatedTemplate,
+  adminNewTaskTemplate,
 } from "../templates/operationalEmails";
 import { logAuditEvent } from "../services/auditLogService";
 import { uploadLimiter } from "../middleware/rateLimiter";
 import { pool } from "../db";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import {
   isPlainObject,
   isNonEmptyString,
@@ -321,13 +323,21 @@ router.post("/", authenticateToken,
 
     const task = await createTask(allowed);
 
-    // ✉️ Email trigger: Task Created with Assigned Employee
-    const finalAssignee = task.assignedTo || task.assigned_to;
-    if (finalAssignee) {
-      pool.query('SELECT full_name AS "fullName", email, role FROM users WHERE id = $1 AND role = $2', [finalAssignee, 'Employee'])
-        .then(empRes => {
+    // ✉️ Non-blocking notifications (Employee assignment email & Administrator notifications)
+    (async () => {
+      const finalAssignee = task.assignedTo || task.assigned_to;
+      let assignedEmployeeName: string | null = null;
+
+      // 1. Employee Assignment Email (existing behavior preserved)
+      if (finalAssignee) {
+        try {
+          const empRes = await pool.query(
+            'SELECT full_name AS "fullName", email, role FROM users WHERE id = $1 AND role = $2',
+            [finalAssignee, 'Employee']
+          );
           if (empRes.rows.length > 0) {
             const emp = empRes.rows[0];
+            assignedEmployeeName = emp.fullName;
             const html = taskAssignedTemplate(
               emp.fullName,
               task.id,
@@ -336,10 +346,78 @@ router.post("/", authenticateToken,
               task.description,
               task.priority
             );
-            return sendEmail(emp.email, `New Task Assigned: ${task.title}`, html);
+            sendEmail(emp.email, `New Task Assigned: ${task.title}`, html).catch(err =>
+              console.error("Task creation assigned email failed:", err)
+            );
           }
-        }).catch(err => console.error("Task creation assigned email failed:", err));
-    }
+        } catch (empErr) {
+          console.error("Task creation assignee query failed:", empErr);
+        }
+      }
+
+      // 2. 🔔 Administrator Notifications (In-app + Email to all active Administrators)
+      try {
+        const adminsRes = await pool.query(
+          `SELECT id, full_name AS "fullName", email FROM users WHERE role = 'Administrator' AND status = 'Active'`
+        );
+        const assigneeStr = assignedEmployeeName ? ` (Assigned: ${assignedEmployeeName})` : " (Unassigned)";
+        const dueStr = (task.dueDate || task.due_date) ? ` (Due: ${new Date(task.dueDate || task.due_date).toLocaleDateString()})` : "";
+
+        // A. Fast bulk insert in-app notifications in a single database query
+        if (adminsRes.rows.length > 0) {
+          try {
+            const notifValues: any[] = [];
+            const notifPlaceholders = adminsRes.rows.map((admin, idx) => {
+              const offset = idx * 6;
+              notifValues.push(
+                `N-${crypto.randomBytes(8).toString("hex")}`,
+                admin.id,
+                "Task Assignment",
+                `New Task Created: ${task.id}`,
+                `Task "${task.title}" (${task.priority} priority)${assigneeStr}${dueStr}.`,
+                "Sent"
+              );
+              return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, NOW())`;
+            });
+
+            await pool.query(
+              `INSERT INTO notifications (id, user_id, notification_type, title, message, status, created_date)
+               VALUES ${notifPlaceholders.join(", ")}`,
+              notifValues
+            );
+          } catch (notifErr) {
+            console.error(`Failed to bulk create admin in-app notifications for task ${task.id}:`, notifErr);
+          }
+        }
+
+        // B. Concurrent email dispatch
+        await Promise.allSettled(
+          adminsRes.rows.map(async (admin) => {
+            try {
+              const adminHtml = adminNewTaskTemplate({
+                adminName: admin.fullName,
+                taskId: task.id,
+                title: task.title,
+                priority: task.priority,
+                category: task.taskCategory || task.task_category,
+                assignedEmployeeName: assignedEmployeeName,
+                dueDate: task.dueDate || task.due_date,
+                description: task.description,
+              });
+              await sendEmail(
+                admin.email,
+                `[Complify] New Task Created: ${task.title}`,
+                adminHtml
+              );
+            } catch (emailErr) {
+              console.error(`Failed to send admin task email to ${admin.email}:`, emailErr);
+            }
+          })
+        );
+      } catch (adminErr) {
+        console.error("Failed to query administrators for task notification:", adminErr);
+      }
+    })().catch(err => console.error("Task post-creation notifications failed:", err));
 
     res.status(201).json({
       success: true,
