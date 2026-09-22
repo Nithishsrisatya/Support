@@ -2,6 +2,9 @@ import { Router } from "express";
 import {
   getAllTickets,
   getTicketById,
+  getTicketsForManager,
+  getTicketsForEmployee,
+  getTicketsForClient,
   createTicket,
   updateTicket,
   deleteTicket,
@@ -34,16 +37,43 @@ import {
   slaReminderTemplate,
 } from "../templates/operationalEmails";
 import { pool } from "../db";
-import { upload, deleteFile, fileExists, resolveAttachmentFilePath } from "../services/fileUploadService";
+import {
+  upload,
+  createUploadMiddleware,
+  deleteFile,
+  fileExists,
+  resolveAttachmentFilePath,
+  validateFileContent,
+  getSafeContentDisposition,
+  isSafeInlinePreviewType,
+} from "../services/fileUploadService";
 import { logAuditEvent } from "../services/auditLogService";
 import { uploadLimiter } from "../middleware/rateLimiter";
 import path from "path";
 import fs from "fs";
+import {
+  isPlainObject,
+  isNonEmptyString,
+  isString,
+  isEnum,
+  isNumber,
+  isValidDateString,
+  isStringArray,
+  isValidId,
+  sanitizePagination,
+  sanitizeSearchQuery,
+  filterAllowedFields,
+  isValidDateRange,
+} from "../utils/validator";
+import { handleDatabaseError } from "../utils/dbErrorHandler";
 
 const router = Router();
 
 // Helper for authorizing ticket access based on user role
 async function authorizeTicketAccess(user: any, ticketId: string, { allowUnassignedManager = false } = {}) {
+  if (!isValidId(ticketId)) {
+    return { canAccess: false, ticket: null, status: 400 };
+  }
   const ticket = await getTicketById(ticketId);
   if (!ticket) {
     return { canAccess: false, ticket: null, status: 404 };
@@ -83,17 +113,50 @@ router.get("/search", authenticateToken, async (req, res) => {
   try {
     const user = (req as any).user;
     const role = String(user?.role ?? "").trim();
-    
+
+    if (req.query.status !== undefined && !isEnum(req.query.status, ["New", "Assigned", "In Progress", "Pending", "Resolved", "Closed"] as const)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket status." });
+    }
+    if (req.query.priority !== undefined && !isEnum(req.query.priority, ["Low", "Medium", "High", "Critical"] as const)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket priority." });
+    }
+    if (req.query.category !== undefined && !isEnum(req.query.category, ["Technical Issue", "Account Issue", "Billing Issue", "Service Request", "General Inquiry"] as const)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket category." });
+    }
+
+    const assignedToRaw = (req.query.assignedTo || req.query.assigned_to) as string | undefined;
+    if (assignedToRaw !== undefined && !isValidId(assignedToRaw)) {
+      return res.status(400).json({ success: false, message: "Invalid assignedTo format." });
+    }
+
+    const fromDateRaw = req.query.fromDate as string | undefined;
+    const toDateRaw = req.query.toDate as string | undefined;
+    if (fromDateRaw !== undefined && !isValidDateString(fromDateRaw)) {
+      return res.status(400).json({ success: false, message: "Invalid fromDate format." });
+    }
+    if (toDateRaw !== undefined && !isValidDateString(toDateRaw)) {
+      return res.status(400).json({ success: false, message: "Invalid toDate format." });
+    }
+    if (fromDateRaw && toDateRaw) {
+      const range = isValidDateRange(fromDateRaw, toDateRaw);
+      if (!range.valid) {
+        return res.status(400).json({ success: false, message: "fromDate must be earlier than or equal to toDate." });
+      }
+    }
+
+    const { page, limit } = sanitizePagination(req.query.page, req.query.limit, 50, 100);
+    const searchQuery = sanitizeSearchQuery(req.query.q, 200);
+
     const filters: any = {
-      search: req.query.q as string,
+      search: searchQuery || undefined,
       status: req.query.status as string,
       priority: req.query.priority as string,
       category: req.query.category as string,
-      assigned_to: req.query.assigned_to as string,
-      fromDate: req.query.fromDate as string,
-      toDate: req.query.toDate as string,
-      page: req.query.page ? parseInt(req.query.page as string, 10) : 1,
-      limit: req.query.limit ? parseInt(req.query.limit as string, 10) : 50,
+      assignedTo: assignedToRaw,
+      fromDate: fromDateRaw,
+      toDate: toDateRaw,
+      page,
+      limit,
     };
 
     // Filter out undefined values
@@ -107,21 +170,19 @@ router.get("/search", authenticateToken, async (req, res) => {
     if (role === "Client") {
       filters.clientId = user.id;
     } else if (role === "Employee") {
-      filters.assigned_to = user.id;
+      filters.assignedTo = user.id;
     } else if (role === "Manager") {
       const teamResult = await pool.query('SELECT id FROM users WHERE manager_id = $1', [user.id]);
       const teamIds = teamResult.rows.map(r => r.id);
       teamIds.push(user.id); // Include manager's own tickets
-      // We'll pass an array to the search function, assuming it can handle it.
-      // This is a conceptual change; searchTickets implementation may need adjustment.
-      filters.assigned_to_in = teamIds;
+      filters.assignedToIn = teamIds;
+      filters.includeUnassigned = true;
     }
 
     const result = await searchTickets(filters);
     res.json(result);
   } catch (err) {
-    console.error("Failed to search tickets:", err);
-    res.status(500).json({ success: false, message: "Failed to search tickets." });
+    return handleDatabaseError(err, res, "Failed to search tickets.");
   }
 });
 
@@ -146,9 +207,9 @@ router.get("/", authenticateToken, async (req, res, next) => {
   try {
     const user = (req as any).user;
     const role = String(user?.role ?? "").trim();
-    const allTickets = await getAllTickets();
 
     if (role === "Administrator") {
+      const allTickets = await getAllTickets();
       return res.json(allTickets);
     }
 
@@ -156,19 +217,17 @@ router.get("/", authenticateToken, async (req, res, next) => {
       const teamResult = await pool.query('SELECT id FROM users WHERE manager_id = $1', [user.id]);
       const teamIds = teamResult.rows.map(r => r.id);
       teamIds.push(user.id); // Manager can see their own tickets too
-      const managerTickets = allTickets.filter(
-        (t: any) => teamIds.includes(t.assignedTo) || t.assignedTo === null
-      );
+      const managerTickets = await getTicketsForManager(teamIds, true);
       return res.json(managerTickets);
     }
 
     if (role === "Employee") {
-      const employeeTickets = allTickets.filter((t: any) => String(t.assignedTo) === String(user.id));
+      const employeeTickets = await getTicketsForEmployee(user.id);
       return res.json(employeeTickets);
     }
 
     if (role === "Client") {
-      const clientTickets = allTickets.filter((t: any) => String(t.clientId ?? t.client_id ?? t.clientid) === String(user.id));
+      const clientTickets = await getTicketsForClient(user.id);
       return res.json(clientTickets);
     }
 
@@ -183,15 +242,15 @@ router.get("/", authenticateToken, async (req, res, next) => {
 // ============================================================
 router.get("/:id", authenticateToken, async (req, res) => {
   try {
-    const { canAccess, ticket, status } = await authorizeTicketAccess((req as any).user, req.params.id);
+    const { canAccess, ticket, status } = await authorizeTicketAccess((req as any).user, req.params.id, { allowUnassignedManager: true });
 
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
     if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
     if (status === 403) return res.status(403).json({ success: false, message: "You do not have permission to view this ticket." });
 
     res.json(ticket);
   } catch (error) {
-    console.error("Failed to fetch ticket by ID:", error);
-    res.status(500).json({ success: false, message: "Failed to fetch ticket." });
+    return handleDatabaseError(error, res, "Failed to fetch ticket.");
   }
 });
 
@@ -204,8 +263,9 @@ router.get("/:id/timeline", authenticateToken, async (req, res) => {
     const role = String(user?.role ?? "").trim();
     const ticketId = req.params.id;
 
-    const { canAccess, ticket, status } = await authorizeTicketAccess(user, ticketId);
+    const { canAccess, ticket, status } = await authorizeTicketAccess(user, ticketId, { allowUnassignedManager: true });
 
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
     if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
     if (status === 403) {
       return res.status(403).json({ success: false, message: "Forbidden" });
@@ -218,8 +278,7 @@ router.get("/:id/timeline", authenticateToken, async (req, res) => {
 
     res.json(filtered);
   } catch (err) {
-    console.error("Failed to fetch timeline:", err);
-    res.status(500).json({ success: false, message: "Failed to fetch timeline." });
+    return handleDatabaseError(err, res, "Failed to fetch timeline.");
   }
 });
 
@@ -229,16 +288,42 @@ router.get("/:id/timeline", authenticateToken, async (req, res) => {
 router.post("/:id/reassign", authenticateToken,
   authorizeRoles(["Administrator", "Manager"]), async (req, res) => {
   try {
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ success: false, message: "Invalid request body." });
+    }
     const user = (req as any).user;
+    const role = String(user?.role ?? "").trim();
     const { assigneeId } = req.body;
 
-    const currentTicket = await getTicketById(req.params.id);
-    if (!currentTicket) {
+    if (assigneeId !== undefined && assigneeId !== null && !isValidId(assigneeId)) {
+      return res.status(400).json({ success: false, message: "Invalid assigneeId format." });
+    }
+
+    const { canAccess, ticket: currentTicket, status } = await authorizeTicketAccess(user, req.params.id, { allowUnassignedManager: true });
+    if (status === 400) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
+    if (status === 404 || !currentTicket) {
       return res.status(404).json({ success: false, message: "Ticket not found." });
+    }
+    if (status === 403 || !canAccess) {
+      return res.status(403).json({ success: false, message: "You do not have permission to reassign this ticket." });
     }
 
     if (isTerminalTicketStatus(currentTicket.status)) {
       return res.status(400).json({ success: false, message: "Closed tickets cannot be assigned." });
+    }
+
+    if (role === "Manager" && assigneeId) {
+      const teamResult = await pool.query('SELECT id FROM users WHERE manager_id = $1', [user.id]);
+      const allowedAssignees = teamResult.rows.map((r: any) => r.id);
+      allowedAssignees.push(user.id);
+      if (!allowedAssignees.includes(assigneeId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Managers can only assign tickets to supervised team members or themselves.",
+        });
+      }
     }
 
     const ticket = await reassignTicket(req.params.id, assigneeId || null, user.fullName || "Administrator");
@@ -262,7 +347,7 @@ router.post("/:id/reassign", authenticateToken,
       }).catch(err => console.error("Reassign email failed:", err));
     }
 
-res.json({ success: true, ticket });
+    res.json({ success: true, ticket });
 
     // Audit log: Ticket Reassignment (non-blocking)
     try {
@@ -278,8 +363,10 @@ res.json({ success: true, ticket });
       console.error("Failed to log audit event:", logErr);
     }
   } catch (error: any) {
-    console.error("Failed to reassign ticket:", error);
-    res.status(500).json({ success: false, message: error.message || "Failed to reassign ticket." });
+    if (error?.message === "Closed tickets cannot be assigned.") {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+    return handleDatabaseError(error, res, "Failed to reassign ticket.");
   }
 });
 
@@ -289,7 +376,69 @@ res.json({ success: true, ticket });
 router.post("/", authenticateToken, 
   authorizeRoles(["Administrator"], true), async (req, res) => {
   try {
-    const ticket = await createTicket(req.body);
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ success: false, message: "Invalid request body." });
+    }
+
+    const allowed = filterAllowedFields<any>(req.body, [
+      "id",
+      "subject",
+      "description",
+      "category",
+      "priority",
+      "dueDate",
+      "assignedTo",
+      "clientId",
+    ]);
+
+    const user = (req as any).user;
+    const role = String(user?.role ?? "").trim();
+    if (role === "Client") {
+      allowed.clientId = user.id;
+    }
+
+    const { id, subject, description, category, priority, dueDate, assignedTo, clientId } = allowed;
+
+    if (id !== undefined && !isValidId(id)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
+
+    if (!isNonEmptyString(subject, 255)) {
+      return res.status(400).json({ success: false, message: "Subject is required (max 255 characters)." });
+    }
+
+    if (!isNonEmptyString(description, 10000)) {
+      return res.status(400).json({ success: false, message: "Description is required (max 10000 characters)." });
+    }
+
+    if (!isEnum(category, ["Technical Issue", "Account Issue", "Billing Issue", "Service Request", "General Inquiry"] as const)) {
+      return res.status(400).json({ success: false, message: "Valid category is required." });
+    }
+
+    if (!isEnum(priority, ["Low", "Medium", "High", "Critical"] as const)) {
+      return res.status(400).json({ success: false, message: "Valid priority is required." });
+    }
+
+    if (dueDate !== undefined && dueDate !== null && !isValidDateString(dueDate)) {
+      return res.status(400).json({ success: false, message: "Invalid due date format." });
+    }
+
+    if (assignedTo !== undefined && assignedTo !== null && !isValidId(assignedTo)) {
+      return res.status(400).json({ success: false, message: "Invalid assignedTo format." });
+    }
+
+    if (clientId !== undefined && clientId !== null && !isValidId(clientId)) {
+      return res.status(400).json({ success: false, message: "Invalid clientId format." });
+    }
+
+    if (!allowed.id) {
+      allowed.id = `TKT-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 5).toUpperCase()}`;
+    }
+    if (!allowed.status) {
+      allowed.status = "New";
+    }
+
+    const ticket = await createTicket(allowed);
 
     // ✉️ Email trigger: Ticket Created (notify client)
     if (ticket && ticket.client_id) {
@@ -310,7 +459,7 @@ router.post("/", authenticateToken,
       }).catch(err => console.error("Ticket created email failed:", err));
     }
 
-res.status(201).json({ success: true, ticket });
+    res.status(201).json({ success: true, ticket });
 
     // Audit log: Ticket Creation (non-blocking)
     try {
@@ -327,8 +476,7 @@ res.status(201).json({ success: true, ticket });
       console.error("Failed to log audit event:", logErr);
     }
   } catch (error) {
-    console.error("Failed to create ticket:", error);
-    res.status(500).json({ success: false, message: "Failed to create ticket." });
+    return handleDatabaseError(error, res, "Failed to create ticket.");
   }
 });
 
@@ -337,28 +485,317 @@ res.status(201).json({ success: true, ticket });
 // ============================================================
 router.put("/:id", authenticateToken, async (req, res) => {
   try {
-    console.log("===== UPDATE TICKET =====");
-    console.log(req.body);
-    const user = (req as any).user;
-    const ticketId = req.params.id;
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request body.",
+      });
+    }
 
-    // Authorization check
+    const user = (req as any).user;
+    const role = String(user?.role ?? "").trim();
+    const ticketId = req.params.id;
+    if (!isValidId(ticketId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ticket ID format.",
+      });
+    }
+
+    // 1. IDOR Prevention: Prevent body ID vs URL param mismatch
+    if (req.body.id !== undefined && String(req.body.id) !== String(ticketId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Ticket ID in request body does not match URL parameter.",
+      });
+    }
+
+    // Input type validation for provided fields
+    const rawRating = req.body.satisfactionRating !== undefined ? req.body.satisfactionRating : req.body.satisfaction_rating;
+    if (rawRating !== undefined && !isNumber(rawRating, { min: 1, max: 5, integer: true })) {
+      return res.status(400).json({
+        success: false,
+        message: "Satisfaction rating must be an integer between 1 and 5.",
+      });
+    }
+
+    const rawDueDate = req.body.dueDate !== undefined ? req.body.dueDate : req.body.due_date;
+    if (rawDueDate !== undefined && rawDueDate !== null && !isValidDateString(rawDueDate)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid due date format.",
+      });
+    }
+
+    if (req.body.category !== undefined && !isEnum(req.body.category, ["Technical Issue", "Account Issue", "Billing Issue", "Service Request", "General Inquiry"] as const)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ticket category.",
+      });
+    }
+
+    if (req.body.priority !== undefined && !isEnum(req.body.priority, ["Low", "Medium", "High", "Critical"] as const)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ticket priority.",
+      });
+    }
+
+    if (req.body.status !== undefined && !isEnum(req.body.status, ["New", "Assigned", "In Progress", "Pending", "Resolved", "Closed"] as const)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ticket status.",
+      });
+    }
+
+    if (req.body.subject !== undefined && (!isString(req.body.subject, 255) || !req.body.subject.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: "Subject cannot be empty (max 255 characters).",
+      });
+    }
+
+    if (req.body.description !== undefined && (!isString(req.body.description, 10000) || !req.body.description.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: "Description cannot be empty (max 10000 characters).",
+      });
+    }
+
+    const rawNotes = req.body.satisfactionNotes !== undefined ? req.body.satisfactionNotes : req.body.satisfaction_notes;
+    if (rawNotes !== undefined && !isString(rawNotes, 2000)) {
+      return res.status(400).json({
+        success: false,
+        message: "Satisfaction notes must be a string (max 2000 characters).",
+      });
+    }
+
+    const rawEmployeeNotes = req.body.employeeNotes !== undefined ? req.body.employeeNotes : req.body.employee_notes;
+    if (rawEmployeeNotes !== undefined && !isString(rawEmployeeNotes, 5000)) {
+      return res.status(400).json({
+        success: false,
+        message: "Employee notes must be a string (max 5000 characters).",
+      });
+    }
+
+    const rawResolution = req.body.resolutionSummary !== undefined ? req.body.resolutionSummary : req.body.resolution_summary;
+    if (rawResolution !== undefined && !isString(rawResolution, 5000)) {
+      return res.status(400).json({
+        success: false,
+        message: "Resolution summary must be a string (max 5000 characters).",
+      });
+    }
+
+    const rawAssignedTo = req.body.assignedTo !== undefined ? req.body.assignedTo : req.body.assigned_to;
+    if (rawAssignedTo !== undefined && rawAssignedTo !== null && !isValidId(rawAssignedTo)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid assignedTo format.",
+      });
+    }
+
+    const rawClientId = req.body.clientId !== undefined ? req.body.clientId : req.body.client_id;
+    if (rawClientId !== undefined && rawClientId !== null && !isValidId(rawClientId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid clientId format.",
+      });
+    }
+
+    // 2. Authorization Check: Verify user has access to this ticket
     const { canAccess, ticket: oldTicket, status } = await authorizeTicketAccess(user, ticketId, { allowUnassignedManager: true });
 
-    if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
-    if (status === 403) return res.status(403).json({ success: false, message: "You do not have permission to update this ticket." });
+    if (status === 400) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
+    if (status === 404 || !oldTicket) {
+      return res.status(404).json({ success: false, message: "Ticket not found." });
+    }
+    if (status === 403 || !canAccess) {
+      return res.status(403).json({ success: false, message: "You do not have permission to update this ticket." });
+    }
 
-    if (!oldTicket) return res.status(404).json({ success: false, message: "Ticket not found." }); // Should be caught by authorizeTicketAccess
-    
-    // Normalize field names for DB (camelCase -> snake_case)
-    const dbUpdates: any = { ...req.body };
-    if (dbUpdates.assignedTo !== undefined) {
-      dbUpdates.assigned_to = dbUpdates.assignedTo;
-      delete dbUpdates.assignedTo;
+    // 3. Role-Based Field Update Authorization (comparing against existing record)
+
+    // (a) Client ID / Ticket Ownership
+    const requestedClientId = req.body.clientId !== undefined ? req.body.clientId : req.body.client_id;
+    if (requestedClientId !== undefined && String(requestedClientId) !== String(oldTicket.clientId)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to change ticket ownership or client.",
+      });
+    }
+
+    // (b) Assignment (assignedTo / assigned_to)
+    const requestedAssignedTo = req.body.assignedTo !== undefined ? req.body.assignedTo : req.body.assigned_to;
+    if (requestedAssignedTo !== undefined) {
+      const normOldAssignee = oldTicket.assignedTo || null;
+      const normNewAssignee = requestedAssignedTo || null;
+      if (normOldAssignee !== normNewAssignee) {
+        if (role === "Client") {
+          return res.status(403).json({
+            success: false,
+            message: "Clients are not authorized to assign or reassign tickets.",
+          });
+        }
+        if (role === "Employee") {
+          return res.status(403).json({
+            success: false,
+            message: "Employees are not authorized to assign or reassign tickets.",
+          });
+        }
+        if (role === "Manager") {
+          const teamResult = await pool.query('SELECT id FROM users WHERE manager_id = $1', [user.id]);
+          const allowedAssignees = teamResult.rows.map((r: any) => r.id);
+          allowedAssignees.push(user.id);
+          if (normNewAssignee !== null && !allowedAssignees.includes(normNewAssignee)) {
+            return res.status(403).json({
+              success: false,
+              message: "Managers can only assign tickets to supervised team members or themselves.",
+            });
+          }
+        }
+      }
+    }
+
+    // (c) Priority
+    if (req.body.priority !== undefined && req.body.priority !== oldTicket.priority) {
+      if (role === "Client") {
+        return res.status(403).json({
+          success: false,
+          message: "Clients cannot modify ticket priority.",
+        });
+      }
+      if (role === "Employee") {
+        return res.status(403).json({
+          success: false,
+          message: "Employees cannot modify ticket priority.",
+        });
+      }
+    }
+
+    // (d) Due Date / SLA Deadline
+    const requestedDueDate = req.body.dueDate !== undefined ? req.body.dueDate : req.body.due_date;
+    if (requestedDueDate !== undefined) {
+      const oldDue = oldTicket.dueDate ? new Date(oldTicket.dueDate).toISOString() : null;
+      const newDue = requestedDueDate ? new Date(requestedDueDate).toISOString() : null;
+      if (oldDue !== newDue) {
+        if (role === "Client") {
+          return res.status(403).json({
+            success: false,
+            message: "Clients cannot modify ticket due date.",
+          });
+        }
+        if (role === "Employee") {
+          return res.status(403).json({
+            success: false,
+            message: "Employees cannot modify ticket due date.",
+          });
+        }
+      }
+    }
+
+    // (e) Satisfaction Rating & Notes
+    const requestedRating = req.body.satisfactionRating !== undefined ? req.body.satisfactionRating : req.body.satisfaction_rating;
+    if (requestedRating !== undefined && Number(requestedRating) !== Number(oldTicket.satisfactionRating)) {
+      if (role === "Employee") {
+        return res.status(403).json({
+          success: false,
+          message: "Employees cannot modify satisfaction rating.",
+        });
+      }
+      if (role === "Manager") {
+        return res.status(403).json({
+          success: false,
+          message: "Managers cannot modify satisfaction rating.",
+        });
+      }
+      if (role === "Client") {
+        if (oldTicket.status !== "Resolved" && req.body.status !== "Closed") {
+          return res.status(400).json({
+            success: false,
+            message: "Satisfaction rating can only be provided when closing a resolved ticket.",
+          });
+        }
+      }
+    }
+
+    // (f) Internal Employee Notes
+    const requestedEmployeeNotes = req.body.employeeNotes !== undefined ? req.body.employeeNotes : req.body.employee_notes;
+    if (requestedEmployeeNotes !== undefined && requestedEmployeeNotes !== oldTicket.employeeNotes) {
+      if (role === "Client") {
+        return res.status(403).json({
+          success: false,
+          message: "Clients cannot modify internal employee notes.",
+        });
+      }
+    }
+
+    // (g) Resolution Summary
+    const requestedResolution = req.body.resolutionSummary !== undefined ? req.body.resolutionSummary : req.body.resolution_summary;
+    if (requestedResolution !== undefined && requestedResolution !== oldTicket.resolutionSummary) {
+      if (role === "Client") {
+        return res.status(403).json({
+          success: false,
+          message: "Clients cannot modify resolution summary.",
+        });
+      }
+    }
+
+    // (h) Subject, Description, Category
+    const subjectChanged = req.body.subject !== undefined && req.body.subject !== oldTicket.subject;
+    const descChanged = req.body.description !== undefined && req.body.description !== oldTicket.description;
+    const catChanged = req.body.category !== undefined && req.body.category !== oldTicket.category;
+    if (subjectChanged || descChanged || catChanged) {
+      if (role === "Client") {
+        return res.status(403).json({
+          success: false,
+          message: "Clients cannot edit ticket subject, description, or category after creation.",
+        });
+      }
+      if (role === "Employee") {
+        return res.status(403).json({
+          success: false,
+          message: "Employees cannot modify ticket subject, description, or category.",
+        });
+      }
+    }
+
+    // (i) Status & Lifecycle Transitions
+    if (req.body.status !== undefined && req.body.status !== oldTicket.status) {
+      if (role === "Client") {
+        // Clients can only confirm resolution by transitioning from Resolved -> Closed
+        if (oldTicket.status !== "Resolved" || req.body.status !== "Closed") {
+          return res.status(403).json({
+            success: false,
+            message: "Clients can only close tickets that are in Resolved status.",
+          });
+        }
+      } else if (role === "Employee") {
+        // Employees cannot close tickets directly (reserved for client confirmation or manager/admin)
+        if (req.body.status === "Closed") {
+          return res.status(403).json({
+            success: false,
+            message: "Employees cannot close tickets. Only clients or managers can confirm closure.",
+          });
+        }
+        if (req.body.status === "New") {
+          return res.status(403).json({
+            success: false,
+            message: "Employees cannot reset ticket status to New.",
+          });
+        }
+        if (isTerminalTicketStatus(oldTicket.status)) {
+          return res.status(403).json({
+            success: false,
+            message: "Employees cannot modify tickets in terminal status.",
+          });
+        }
+      }
     }
 
     // Backend Security: Prevent assigning terminal tickets without reopening
-    if (dbUpdates.assigned_to !== undefined) {
+    if (requestedAssignedTo !== undefined) {
       if (isTerminalTicketStatus(oldTicket.status)) {
         const isReopening = req.body.status && isActiveTicketStatus(req.body.status);
         if (!isReopening) {
@@ -367,30 +804,41 @@ router.put("/:id", authenticateToken, async (req, res) => {
       }
     }
 
-    console.log("dbUpdates =", dbUpdates);
-    if (dbUpdates.clientId !== undefined) {
-      dbUpdates.client_id = dbUpdates.clientId;
-      delete dbUpdates.clientId;
-    }
-    if (dbUpdates.resolutionSummary !== undefined) {
-      dbUpdates.resolution_summary = dbUpdates.resolutionSummary;
-      delete dbUpdates.resolutionSummary;
-    }
-    if (dbUpdates.satisfactionRating !== undefined) {
-      dbUpdates.satisfaction_rating = dbUpdates.satisfactionRating;
-      delete dbUpdates.satisfactionRating;
-    }
-    if (dbUpdates.employeeNotes !== undefined) {
-      dbUpdates.employee_notes = dbUpdates.employeeNotes;
-      delete dbUpdates.employeeNotes;
-    }
-    if (dbUpdates.dueDate !== undefined) {
-      dbUpdates.due_date = dbUpdates.dueDate;
-      delete dbUpdates.dueDate;
-    }
-    if (dbUpdates.completedAt !== undefined) {
-      dbUpdates.completed_at = dbUpdates.completedAt;
-      delete dbUpdates.completedAt;
+    // 4. Build sanitized updates for database (role-restricted field extraction)
+    const dbUpdates: any = {};
+
+    // Status (if changed or passed)
+    if (req.body.status !== undefined) dbUpdates.status = req.body.status;
+
+    if (role === "Client") {
+      // Clients only update closure rating & notes
+      if (requestedRating !== undefined) dbUpdates.satisfaction_rating = requestedRating;
+      if (req.body.satisfactionNotes !== undefined || req.body.satisfaction_notes !== undefined) {
+        dbUpdates.satisfaction_notes = req.body.satisfactionNotes || req.body.satisfaction_notes;
+      }
+    } else if (role === "Employee") {
+      // Employees update status, resolution summary, employee notes
+      if (requestedResolution !== undefined) dbUpdates.resolution_summary = requestedResolution;
+      if (requestedEmployeeNotes !== undefined) dbUpdates.employee_notes = requestedEmployeeNotes;
+    } else {
+      // Manager and Administrator
+      if (requestedAssignedTo !== undefined) dbUpdates.assigned_to = requestedAssignedTo;
+      if (req.body.priority !== undefined) dbUpdates.priority = req.body.priority;
+      if (requestedDueDate !== undefined) dbUpdates.due_date = requestedDueDate;
+      if (requestedResolution !== undefined) dbUpdates.resolution_summary = requestedResolution;
+      if (requestedEmployeeNotes !== undefined) dbUpdates.employee_notes = requestedEmployeeNotes;
+      if (req.body.subject !== undefined) dbUpdates.subject = req.body.subject;
+      if (req.body.description !== undefined) dbUpdates.description = req.body.description;
+      if (req.body.category !== undefined) dbUpdates.category = req.body.category;
+      if (req.body.completedAt !== undefined || req.body.completed_at !== undefined) {
+        dbUpdates.completed_at = req.body.completedAt || req.body.completed_at;
+      }
+      if (role === "Administrator" && requestedClientId !== undefined) {
+        dbUpdates.client_id = requestedClientId;
+      }
+      if (role === "Administrator" && requestedRating !== undefined) {
+        dbUpdates.satisfaction_rating = requestedRating;
+      }
     }
 
     const ticket = await updateTicket(ticketId, dbUpdates, user.fullName || "User");
@@ -486,8 +934,7 @@ res.json({ success: true, ticket });
       }
     })();
   } catch (error: any) {
-    console.error("Failed to update ticket:", error);
-    res.status(500).json({ success: false, message: error.message || "Failed to update ticket." });
+    return handleDatabaseError(error, res, "Failed to update ticket.");
   }
 });
 
@@ -498,10 +945,14 @@ res.json({ success: true, ticket });
 // GET /api/tickets/:id/comments - Get ticket comments
 router.get("/:id/comments", authenticateToken, async (req, res) => {
   try {
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
     const user = (req as any).user;
     const role = String(user?.role ?? "").trim();
 
-    const { canAccess, ticket, status } = await authorizeTicketAccess(user, req.params.id);
+    const { canAccess, ticket, status } = await authorizeTicketAccess(user, req.params.id, { allowUnassignedManager: true });
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
     if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
     if (status === 403) return res.status(403).json({ success: false, message: "Forbidden" });
 
@@ -510,24 +961,34 @@ router.get("/:id/comments", authenticateToken, async (req, res) => {
     const comments = await getTicketComments(req.params.id, includeInternal);
     res.json(comments);
   } catch (err) {
-    console.error("Failed to fetch comments:", err);
-    res.status(500).json({ success: false, message: "Failed to fetch comments." });
+    return handleDatabaseError(err, res, "Failed to fetch comments.");
   }
 });
 
 // POST /api/tickets/:id/comments - Add a comment
 router.post("/:id/comments", authenticateToken, async (req, res) => {
   try {
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ success: false, message: "Invalid request body." });
+    }
     const user = (req as any).user;
     const ticketId = req.params.id;
+    if (!isValidId(ticketId)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
     const { content, isInternal } = req.body;
 
-    if (!content || !content.trim()) {
-      return res.status(400).json({ success: false, message: "Comment content is required." });
+    if (!isNonEmptyString(content, 5000)) {
+      return res.status(400).json({ success: false, message: "Comment content is required (max 5000 characters)." });
+    }
+
+    if (isInternal !== undefined && typeof isInternal !== "boolean") {
+      return res.status(400).json({ success: false, message: "isInternal must be a boolean." });
     }
 
     // Verify ticket access
-    const { canAccess, ticket, status } = await authorizeTicketAccess(user, ticketId);
+    const { canAccess, ticket, status } = await authorizeTicketAccess(user, ticketId, { allowUnassignedManager: true });
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
     if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
     if (status === 403) return res.status(403).json({ success: false, message: "Forbidden" });
 
@@ -552,8 +1013,7 @@ router.post("/:id/comments", authenticateToken, async (req, res) => {
 
     res.status(201).json({ success: true, comment });
   } catch (err) {
-    console.error("Failed to add comment:", err);
-    res.status(500).json({ success: false, message: "Failed to add comment." });
+    return handleDatabaseError(err, res, "Failed to add comment.");
   }
 });
 
@@ -561,11 +1021,13 @@ router.post("/:id/comments", authenticateToken, async (req, res) => {
 router.delete("/:id/comments/:commentId", authenticateToken, 
   authorizeRoles(["Administrator"]), async (req, res) => {
   try {
+    if (!isValidId(req.params.id) || !isValidId(req.params.commentId)) {
+      return res.status(400).json({ success: false, message: "Invalid ID format." });
+    }
     await deleteTicketComment(req.params.commentId);
     res.json({ success: true, message: "Comment deleted." });
   } catch (err) {
-    console.error("Failed to delete comment:", err);
-    res.status(500).json({ success: false, message: "Failed to delete comment." });
+    return handleDatabaseError(err, res, "Failed to delete comment.");
   }
 });
 
@@ -576,64 +1038,125 @@ router.delete("/:id/comments/:commentId", authenticateToken,
 // GET /api/tickets/:id/attachments - Get ticket attachments
 router.get("/:id/attachments", authenticateToken, async (req, res) => {
   try {
-    const { canAccess, status } = await authorizeTicketAccess((req as any).user, req.params.id);
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
+    const { canAccess, status } = await authorizeTicketAccess((req as any).user, req.params.id, { allowUnassignedManager: true });
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
     if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
     if (status === 403) return res.status(403).json({ success: false, message: "Forbidden" });
 
     const ticketId = req.params.id;
     const attachments = await getTicketAttachments(ticketId);
-    res.json(attachments);
+    // Sanitize response to omit internal server storage filePath
+    const safeAttachments = attachments.map((att: any) => ({
+      id: att.id,
+      ticketId: att.ticketId,
+      fileName: att.fileName,
+      fileSize: Number(att.fileSize),
+      mimeType: att.mimeType,
+      uploadedBy: att.uploadedBy,
+      uploadedByName: att.uploadedByName,
+      createdDate: att.createdDate,
+    }));
+    res.json(safeAttachments);
   } catch (err) {
-    console.error("Failed to fetch attachments:", err);
-    res.status(500).json({ success: false, message: "Failed to fetch attachments." });
+    return handleDatabaseError(err, res, "Failed to fetch attachments.");
   }
 });
 
 // POST /api/tickets/:id/attachments - Upload attachment
-router.post("/:id/attachments", uploadLimiter, authenticateToken, upload.single("file"), async (req, res) => {
+router.post("/:id/attachments", uploadLimiter, authenticateToken, createUploadMiddleware("file"), async (req, res) => {
   try {
     const user = (req as any).user;
     const ticketId = req.params.id;
+    if (!isValidId(ticketId)) {
+      if (req.file?.path) deleteFile(req.file.path);
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
 
-    const { canAccess, ticket, status } = await authorizeTicketAccess(user, ticketId);
-    if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
-    if (status === 403) return res.status(403).json({ success: false, message: "Forbidden" });
+    const { canAccess, ticket, status } = await authorizeTicketAccess(user, ticketId, { allowUnassignedManager: true });
+    if (status === 400) {
+      if (req.file?.path) deleteFile(req.file.path);
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
+    if (status === 404) {
+      if (req.file?.path) deleteFile(req.file.path);
+      return res.status(404).json({ success: false, message: "Ticket not found." });
+    }
+    if (status === 403) {
+      if (req.file?.path) deleteFile(req.file.path);
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
 
     if (!req.file) {
       return res.status(400).json({ success: false, message: "No file uploaded." });
     }
 
-    const attachment = await addTicketAttachment({
-      ticketId,
-      fileName: req.file.originalname,
-      filePath: req.file.filename,
-      fileSize: req.file.size,
-      mimeType: req.file.mimetype,
-      uploadedBy: user.id,
-      uploadedByName: user.fullName || "Unknown",
-    });
-
-    // Record in history
-    if (ticket) {
-      await createTicketHistoryEntry({
-        ticketId,
-        status: ticket.status,
-        updatedBy: user.fullName || "User",
-        comment: `File attached: ${req.file.originalname}`,
+    // Magic-byte content validation
+    const validation = await validateFileContent(req.file.path, req.file.originalname, req.file.mimetype);
+    if (!validation.valid) {
+      deleteFile(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: validation.reason || "Invalid file content.",
       });
     }
 
-    res.status(201).json({ success: true, attachment });
+    let attachment;
+    try {
+      attachment = await addTicketAttachment({
+        ticketId,
+        fileName: req.file.originalname,
+        filePath: req.file.filename,
+        fileSize: req.file.size,
+        mimeType: req.file.mimetype,
+        uploadedBy: user.id,
+        uploadedByName: user.fullName || "Unknown",
+      });
+
+      // Record in history
+      if (ticket) {
+        await createTicketHistoryEntry({
+          ticketId,
+          status: ticket.status,
+          updatedBy: user.fullName || "User",
+          comment: `File attached: ${req.file.originalname}`,
+        });
+      }
+    } catch (dbErr) {
+      // Rollback: remove uploaded file from disk if database insertion failed
+      deleteFile(req.file.path);
+      throw dbErr;
+    }
+
+    res.status(201).json({
+      success: true,
+      attachment: {
+        id: attachment.id,
+        ticketId: attachment.ticketId,
+        fileName: attachment.fileName,
+        fileSize: Number(attachment.fileSize),
+        mimeType: attachment.mimeType,
+        uploadedBy: attachment.uploadedBy,
+        uploadedByName: attachment.uploadedByName,
+        createdDate: attachment.createdDate,
+      },
+    });
   } catch (err: any) {
-    console.error("Failed to upload attachment:", err);
-    res.status(500).json({ success: false, message: err.message || "Failed to upload attachment." });
+    if (req.file?.path) deleteFile(req.file.path);
+    return handleDatabaseError(err, res, "Failed to upload attachment.");
   }
 });
 
 // GET /api/tickets/:id/attachments/:attachmentId/preview - Preview attachment inline
 router.get("/:id/attachments/:attachmentId/preview", authenticateToken, async (req, res) => {
   try {
-    const { canAccess, status } = await authorizeTicketAccess((req as any).user, req.params.id);
+    if (!isValidId(req.params.id) || !isValidId(req.params.attachmentId)) {
+      return res.status(400).json({ success: false, message: "Invalid ID format." });
+    }
+    const { canAccess, status } = await authorizeTicketAccess((req as any).user, req.params.id, { allowUnassignedManager: true });
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
     if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
     if (status === 403) return res.status(403).json({ success: false, message: "Forbidden" });
 
@@ -647,19 +1170,33 @@ router.get("/:id/attachments/:attachmentId/preview", authenticateToken, async (r
       return res.status(404).json({ success: false, message: "File not found on disk." });
     }
 
-    res.setHeader("Content-Type", attachment.mimeType || "application/octet-stream");
-    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(attachment.fileName)}"`);
+    // Security headers to prevent MIME sniffing and script execution
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+
+    const mime = attachment.mimeType || "application/octet-stream";
+    if (isSafeInlinePreviewType(mime)) {
+      res.setHeader("Content-Type", mime);
+      res.setHeader("Content-Disposition", getSafeContentDisposition(attachment.fileName, "inline"));
+    } else {
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Disposition", getSafeContentDisposition(attachment.fileName, "attachment"));
+    }
+
     res.sendFile(resolvedPath);
   } catch (err) {
-    console.error("Failed to preview attachment:", err);
-    res.status(500).json({ success: false, message: "Failed to preview attachment." });
+    return handleDatabaseError(err, res, "Failed to preview attachment.");
   }
 });
 
 // GET /api/tickets/:id/attachments/:attachmentId/download - Download attachment
 router.get("/:id/attachments/:attachmentId/download", authenticateToken, async (req, res) => {
   try {
-    const { canAccess, status } = await authorizeTicketAccess((req as any).user, req.params.id);
+    if (!isValidId(req.params.id) || !isValidId(req.params.attachmentId)) {
+      return res.status(400).json({ success: false, message: "Invalid ID format." });
+    }
+    const { canAccess, status } = await authorizeTicketAccess((req as any).user, req.params.id, { allowUnassignedManager: true });
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
     if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
     if (status === 403) return res.status(403).json({ success: false, message: "Forbidden" });
 
@@ -673,30 +1210,47 @@ router.get("/:id/attachments/:attachmentId/download", authenticateToken, async (
       return res.status(404).json({ success: false, message: "File not found on disk." });
     }
 
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+    res.setHeader("Content-Disposition", getSafeContentDisposition(attachment.fileName, "attachment"));
+
     res.download(resolvedPath, attachment.fileName);
   } catch (err) {
-    console.error("Failed to download attachment:", err);
-    res.status(500).json({ success: false, message: "Failed to download attachment." });
+    return handleDatabaseError(err, res, "Failed to download attachment.");
   }
 });
 
 // DELETE /api/tickets/:id/attachments/:attachmentId - Delete attachment
-router.delete("/:id/attachments/:attachmentId", authenticateToken,
-  authorizeRoles(["Administrator"]), async (req, res) => {
+router.delete("/:id/attachments/:attachmentId", authenticateToken, async (req, res) => {
   try {
-    const attachment = await getAttachmentById(req.params.attachmentId);
-    if (!attachment) return res.status(404).json({ success: false, message: "Attachment not found." });
+    if (!isValidId(req.params.id) || !isValidId(req.params.attachmentId)) {
+      return res.status(400).json({ success: false, message: "Invalid ID format." });
+    }
+    const user = (req as any).user;
+    const { canAccess, status } = await authorizeTicketAccess(user, req.params.id, { allowUnassignedManager: true });
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
+    if (status === 403) return res.status(403).json({ success: false, message: "Forbidden" });
 
-    // Delete file from disk
-    deleteFile(attachment.filePath);
-    
-    // Delete from database
+    const attachment = await getAttachmentById(req.params.attachmentId);
+    if (!attachment || attachment.ticketId !== req.params.id) {
+      return res.status(404).json({ success: false, message: "Attachment not found." });
+    }
+
+    // Role check: Administrator, Manager (within ticket team scope), or the user who uploaded the file
+    const role = String(user?.role ?? "").trim();
+    const isUploader = String(attachment.uploadedBy) === String(user.id);
+    if (role !== "Administrator" && role !== "Manager" && !isUploader) {
+      return res.status(403).json({ success: false, message: "Forbidden: You cannot delete this attachment." });
+    }
+
+    // Delete from database first, then delete file from disk
     await deleteTicketAttachment(req.params.attachmentId);
+    deleteFile(attachment.filePath);
 
     res.json({ success: true, message: "Attachment deleted." });
   } catch (err) {
-    console.error("Failed to delete attachment:", err);
-    res.status(500).json({ success: false, message: "Failed to delete attachment." });
+    return handleDatabaseError(err, res, "Failed to delete attachment.");
   }
 });
 
@@ -705,8 +1259,14 @@ router.delete("/:id/attachments/:attachmentId", authenticateToken,
 // ============================================================
 router.post("/:id/reopen", authenticateToken, async (req, res) => {
   try {
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ success: false, message: "Invalid request body." });
+    }
     const user = (req as any).user;
     const ticketId = req.params.id;
+    if (!isValidId(ticketId)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
     const role = String(user?.role ?? "").trim();
 
     // Role authorization check: Employees cannot reopen tickets
@@ -714,7 +1274,16 @@ router.post("/:id/reopen", authenticateToken, async (req, res) => {
       return res.status(403).json({ success: false, message: "Employees are not authorized to reopen tickets." });
     }
 
+    if (req.body.status !== undefined && !isEnum(req.body.status, ["New", "Assigned", "In Progress", "Pending", "Resolved", "Closed"] as const)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket status." });
+    }
+
+    if (req.body.comment !== undefined && (!isString(req.body.comment, 2000))) {
+      return res.status(400).json({ success: false, message: "Comment must be a string (max 2000 characters)." });
+    }
+
     const { canAccess, ticket: oldTicket, status } = await authorizeTicketAccess(user, ticketId, { allowUnassignedManager: true });
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
     if (status === 404) return res.status(404).json({ success: false, message: "Ticket not found." });
     if (status === 403) return res.status(403).json({ success: false, message: "You do not have permission to reopen this ticket." });
 
@@ -745,8 +1314,7 @@ router.post("/:id/reopen", authenticateToken, async (req, res) => {
 
     res.json({ success: true, ticket });
   } catch (error: any) {
-    console.error("Failed to reopen ticket:", error);
-    res.status(500).json({ success: false, message: error.message || "Failed to reopen ticket." });
+    return handleDatabaseError(error, res, "Failed to reopen ticket.");
   }
 });
 
@@ -755,8 +1323,17 @@ router.post("/:id/reopen", authenticateToken, async (req, res) => {
 // ============================================================
 router.post("/:id/remind-overdue", authenticateToken, authorizeRoles(["Administrator", "Manager"]), async (req, res) => {
   try {
-    const ticket = await getTicketById(req.params.id);
-    if (!ticket) return res.status(404).json({ success: false, message: "Ticket not found." });
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ success: false, message: "Invalid request body." });
+    }
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
+    const user = (req as any).user;
+    const { canAccess, ticket, status } = await authorizeTicketAccess(user, req.params.id);
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    if (status === 404 || !ticket) return res.status(404).json({ success: false, message: "Ticket not found." });
+    if (status === 403 || !canAccess) return res.status(403).json({ success: false, message: "Forbidden" });
 
     if (isTerminalTicketStatus(ticket.status)) {
       return res.status(400).json({ success: false, message: "Cannot send reminders for completed or closed tickets." });
@@ -764,6 +1341,10 @@ router.post("/:id/remind-overdue", authenticateToken, authorizeRoles(["Administr
 
     const assignedToId = ticket.assignedTo;
     if (!assignedToId) return res.status(400).json({ success: false, message: "Ticket is not assigned to anyone." });
+
+    if (req.body.daysOverdue !== undefined && !isNumber(req.body.daysOverdue, { min: 0 })) {
+      return res.status(400).json({ success: false, message: "daysOverdue must be a non-negative number." });
+    }
 
     const daysOverdue = req.body.daysOverdue || 1;
 
@@ -786,16 +1367,24 @@ router.post("/:id/remind-overdue", authenticateToken, authorizeRoles(["Administr
 
     res.json({ success: true, message: "Overdue reminder email sent." });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Failed to send reminder." });
+    return handleDatabaseError(error, res, "Failed to send reminder.");
   }
 });
 
 // POST /api/tickets/:id/remind-sla - Send SLA deadline reminder
 router.post("/:id/remind-sla", authenticateToken, authorizeRoles(["Administrator", "Manager"]), async (req, res) => {
   try {
-    const ticket = await getTicketById(req.params.id);
-    if (!ticket) return res.status(404).json({ success: false, message: "Ticket not found." });
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ success: false, message: "Invalid request body." });
+    }
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
+    const user = (req as any).user;
+    const { canAccess, ticket, status } = await authorizeTicketAccess(user, req.params.id);
+    if (status === 400) return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    if (status === 404 || !ticket) return res.status(404).json({ success: false, message: "Ticket not found." });
+    if (status === 403 || !canAccess) return res.status(403).json({ success: false, message: "Forbidden" });
 
     if (isTerminalTicketStatus(ticket.status)) {
       return res.status(400).json({ success: false, message: "Cannot send reminders for completed or closed tickets." });
@@ -803,6 +1392,10 @@ router.post("/:id/remind-sla", authenticateToken, authorizeRoles(["Administrator
 
     const assignedToId = ticket.assignedTo;
     if (!assignedToId) return res.status(400).json({ success: false, message: "Ticket is not assigned to anyone." });
+
+    if (req.body.slaDeadline !== undefined && !isValidDateString(req.body.slaDeadline)) {
+      return res.status(400).json({ success: false, message: "Invalid SLA deadline format." });
+    }
 
     const slaDeadline = req.body.slaDeadline || new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(); // Default: 4 hours from now
 
@@ -825,8 +1418,7 @@ router.post("/:id/remind-sla", authenticateToken, authorizeRoles(["Administrator
 
     res.json({ success: true, message: "SLA reminder email sent." });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Failed to send SLA reminder." });
+    return handleDatabaseError(error, res, "Failed to send SLA reminder.");
   }
 });
 
@@ -836,6 +1428,9 @@ router.delete("/:id", authenticateToken,
   try {
     const user = (req as any).user;
     const ticketId = req.params.id;
+    if (!isValidId(ticketId)) {
+      return res.status(400).json({ success: false, message: "Invalid ticket ID format." });
+    }
     // Fetch ticket first for audit description
     const ticketDel = await getTicketById(ticketId);
     await deleteTicket(ticketId);
@@ -856,7 +1451,7 @@ router.delete("/:id", authenticateToken,
     
     res.json({ success: true, message: "Ticket deleted." });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to delete ticket." });
+    return handleDatabaseError(error, res, "Failed to delete ticket.");
   }
 });
 
@@ -864,16 +1459,64 @@ router.delete("/:id", authenticateToken,
 // POST /api/tickets/bulk - Bulk Actions
 // ============================================================
 router.post("/bulk", authenticateToken, authorizeRoles(["Administrator", "Manager"]), async (req, res) => {
+    if (!isPlainObject(req.body)) {
+        return res.status(400).json({ success: false, message: "Invalid request body." });
+    }
     const { action, ids, payload } = req.body;
     const user = (req as any).user;
+    const role = String(user?.role ?? "").trim();
 
-    if (!action || !Array.isArray(ids) || ids.length === 0) {
+    if (!isNonEmptyString(action, 50) || !isStringArray(ids, { minItems: 1 })) {
         return res.status(400).json({ success: false, message: "Action and a non-empty array of IDs are required." });
+    }
+
+    if (ids.length > 100 || !ids.every((id: string) => isValidId(id))) {
+        return res.status(400).json({ success: false, message: "Invalid IDs in bulk request (max 100 valid IDs)." });
+    }
+
+    if (payload !== undefined && !isPlainObject(payload)) {
+        return res.status(400).json({ success: false, message: "Payload must be an object." });
+    }
+
+    if (action === 'assign' && payload?.assigneeId && !isValidId(payload.assigneeId)) {
+        return res.status(400).json({ success: false, message: "Invalid assignee ID format." });
+    }
+
+    if (action === 'updateStatus' && payload?.status && !isEnum(payload.status, ["New", "Assigned", "In Progress", "Pending", "Resolved", "Closed"] as const)) {
+        return res.status(400).json({ success: false, message: "Invalid ticket status." });
     }
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+
+        if (role === "Manager") {
+            const teamResult = await client.query('SELECT id FROM users WHERE manager_id = $1', [user.id]);
+            const teamIds = teamResult.rows.map((r: any) => r.id);
+            teamIds.push(user.id);
+
+            const scopeCheck = await client.query(
+                `SELECT id FROM tickets WHERE id = ANY($1::text[]) AND (assigned_to = ANY($2::varchar[]) OR assigned_to IS NULL)`,
+                [ids, teamIds]
+            );
+            if (scopeCheck.rows.length !== ids.length) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({
+                    success: false,
+                    message: "One or more tickets are outside your authorized team scope.",
+                });
+            }
+
+            if (action === 'assign') {
+                if (!payload || !payload.assigneeId || !teamIds.includes(payload.assigneeId)) {
+                    await client.query('ROLLBACK');
+                    return res.status(403).json({
+                        success: false,
+                        message: "Managers can only assign tickets to supervised team members or themselves.",
+                    });
+                }
+            }
+        }
         let result;
         let logAction = "Bulk Ticket Update";
         let logDescription = "";
@@ -934,8 +1577,10 @@ router.post("/bulk", authenticateToken, authorizeRoles(["Administrator", "Manage
         res.json({ success: true, message: `Successfully performed '${action}' on ${result.rowCount} tickets.` });
     } catch (error: any) {
         await client.query('ROLLBACK');
-        console.error("Bulk ticket action failed:", error);
-        res.status(500).json({ success: false, message: error.message || "Bulk operation failed." });
+        if (error?.message === "Closed tickets cannot be assigned." || error?.message === "Invalid bulk action specified." || error?.message?.includes("is required for")) {
+            return res.status(400).json({ success: false, message: error.message });
+        }
+        return handleDatabaseError(error, res, "Bulk operation failed.");
     } finally {
         client.release();
     }

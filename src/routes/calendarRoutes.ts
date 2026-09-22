@@ -5,6 +5,7 @@ import {
   CalendarDeadlineEvent,
   getCalendarDeadlineStage,
 } from "../services/deadlineService";
+import { isValidDateRange } from "../utils/validator";
 
 const router = Router();
 
@@ -42,18 +43,16 @@ router.get("/deadlines", authenticateToken, async (req, res) => {
 
     const { start, end } = req.query;
 
-    if (!start || !end) {
+    if (!start || !end || typeof start !== "string" || typeof end !== "string") {
       return res.status(400).json({
         error: "Missing required query parameters: 'start' and 'end' (YYYY-MM-DD).",
       });
     }
 
-    const startDate = new Date(String(start));
-    const endDate = new Date(String(end));
-
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+    const rangeCheck = isValidDateRange(start, end, 366);
+    if (!rangeCheck.valid) {
       return res.status(400).json({
-        error: "Invalid date format for 'start' or 'end'. Use YYYY-MM-DD.",
+        error: rangeCheck.error || "Invalid date range.",
       });
     }
 

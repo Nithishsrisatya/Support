@@ -1,4 +1,5 @@
 import { pool } from "../db";
+import crypto from "crypto";
 
 export async function getAllNotifications() {
   const result = await pool.query(`
@@ -89,11 +90,21 @@ export async function getNotificationCountByUserId(userId: string) {
 
 export async function createNotification(notification: any) {
   try {
+    const id = notification.id || `NOTIF-${Date.now().toString().slice(-8)}-${crypto.randomInt(1000, 9999)}`;
     const result = await pool.query(
       `INSERT INTO notifications (id, user_id, notification_type, title, message, status, created_date, read_date)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
+       RETURNING
+         id,
+         user_id AS "userId",
+         notification_type AS "notificationType",
+         title,
+         message,
+         status,
+         created_date AS "createdDate",
+         read_date AS "readDate"`,
       [
-        notification.id,
+        id,
         notification.userId,
         notification.notificationType,
         notification.title,
@@ -105,7 +116,6 @@ export async function createNotification(notification: any) {
     return result.rows[0];
   } catch (error) {
     console.error("Critical Notification Error:", error);
-    // Return null instead of throwing, so the main API flow isn't interrupted
     return null; 
   }
 }
@@ -116,7 +126,15 @@ export async function markAsRead(id: string) {
     UPDATE notifications
     SET status='Read', read_date=NOW()
     WHERE id=$1 AND status != 'Read'
-    RETURNING *
+    RETURNING
+      id,
+      user_id AS "userId",
+      notification_type AS "notificationType",
+      title,
+      message,
+      status,
+      created_date AS "createdDate",
+      read_date AS "readDate"
     `,
     [id]
   );
@@ -130,7 +148,15 @@ export async function markAllAsReadByUserId(userId: string) {
     UPDATE notifications
     SET status='Read', read_date=NOW()
     WHERE user_id=$1 AND status != 'Read'
-    RETURNING *
+    RETURNING
+      id,
+      user_id AS "userId",
+      notification_type AS "notificationType",
+      title,
+      message,
+      status,
+      created_date AS "createdDate",
+      read_date AS "readDate"
     `,
     [userId]
   );
@@ -139,13 +165,15 @@ export async function markAllAsReadByUserId(userId: string) {
 }
 
 export async function deleteAllNotificationsByUserId(userId: string) {
-  await pool.query(
+  const result = await pool.query(
     `
     DELETE FROM notifications
     WHERE user_id=$1
+    RETURNING id
     `,
     [userId]
   );
+  return result.rowCount ?? 0;
 }
 
 export async function updateNotification(id: string, notification: any) {
@@ -160,7 +188,15 @@ export async function updateNotification(id: string, notification: any) {
       status=$5,
       read_date=$6
     WHERE id=$7
-    RETURNING *
+    RETURNING
+      id,
+      user_id AS "userId",
+      notification_type AS "notificationType",
+      title,
+      message,
+      status,
+      created_date AS "createdDate",
+      read_date AS "readDate"
     `,
     [
       notification.userId,
@@ -177,11 +213,13 @@ export async function updateNotification(id: string, notification: any) {
 }
 
 export async function deleteNotification(id: string) {
-  await pool.query(
+  const result = await pool.query(
     `
     DELETE FROM notifications
     WHERE id=$1
+    RETURNING id
     `,
     [id]
   );
+  return (result.rowCount ?? 0) > 0;
 }

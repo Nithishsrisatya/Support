@@ -11,6 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test --test-concurrency=1",
     "migrate": "tsx src/migrate.ts"
   },
   "dependencies": {

@@ -20,8 +20,11 @@ import ErrorBoundary from "./components/ErrorBoundary";
 
 import { User, Client, Ticket, Task, Notification, AuditLog, TicketStatus, TaskStatus, TicketPriority, SentEmail, ReviewStatus } from "./types";
 
-import { createId, generateNotification } from "./utils";
-import {apiFetch} from "./services/api";
+import { createId, generateNotification, isTokenExpired } from "./utils";
+import { apiFetch } from "./services/api";
+
+export { isTokenExpired };
+
 export default function App() {
   // Initialize States from LocalStorage or Seed Data
   const [users, setUsers] = useState<User[]>([]);
@@ -57,21 +60,31 @@ export default function App() {
   const [showToast, setShowToast] = useState(false);
   const [isLoadingData, setIsLoadingData] = useState(false);
 
+  // Auto-dismiss toast after 4 seconds
+  useEffect(() => {
+    if (showToast) {
+      const timer = setTimeout(() => setShowToast(false), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [showToast]);
 
-async function loadUsers() {
+  async function loadUsers() {
     try {
       const res = await apiFetch("/users");
-      setUsers(res);
+      setUsers(Array.isArray(res) ? res : (res?.users || []));
     } catch (err) {
       console.error("Failed to load users:", err);
+      setUsers([]);
     }
   }
-   async function loadClients() {
+
+  async function loadClients() {
     try {
       const data = await apiFetch("/clients");
-      setClients(data);
+      setClients(Array.isArray(data) ? data : (data?.clients || []));
     } catch (err) {
       console.error("Failed to load clients:", err);
+      setClients([]);
     }
   }
 
@@ -87,41 +100,47 @@ async function loadUsers() {
   }
 
   async function loadTickets() {
-  try {
-    const data = await apiFetch("/tickets");
-    setTickets(data);
-  } catch (err) {
-    console.error("Failed to load tickets:", err);
+    try {
+      const data = await apiFetch("/tickets");
+      setTickets(Array.isArray(data) ? data : (data?.tickets || []));
+    } catch (err) {
+      console.error("Failed to load tickets:", err);
+      setTickets([]);
+    }
   }
-}
-async function loadTasks() {
-  try {
-    const data = await apiFetch("/tasks");
-    setTasks(data);
-  } catch (err) {
-    console.error("Failed to load tasks:", err);
-  }
-}
-async function loadNotifications() {
-  try {
-    const data = await apiFetch("/notifications");
 
-    setNotifications(data);
-  } catch (err) {
-    console.error("Failed to load notifications:", err);
+  async function loadTasks() {
+    try {
+      const data = await apiFetch("/tasks");
+      setTasks(Array.isArray(data) ? data : (data?.tasks || []));
+    } catch (err) {
+      console.error("Failed to load tasks:", err);
+      setTasks([]);
+    }
   }
-}
-async function loadAuditLogs() {
-  try {
-    const data = await apiFetch("/audit-logs");
-    setAuditLogs(data);
-  } catch (err) {
-    console.error("Failed to load audit logs:", err);
+
+  async function loadNotifications() {
+    try {
+      const data = await apiFetch("/notifications");
+      setNotifications(Array.isArray(data) ? data : (data?.notifications || []));
+    } catch (err) {
+      console.error("Failed to load notifications:", err);
+      setNotifications([]);
+    }
   }
-}
+
+  async function loadAuditLogs() {
+    try {
+      const data = await apiFetch("/audit-logs");
+      setAuditLogs(Array.isArray(data) ? data : (data?.auditLogs || []));
+    } catch (err) {
+      console.error("Failed to load audit logs:", err);
+      setAuditLogs([]);
+    }
+  }
+
   const loadAllData = async (roleToLoad: string) => {
     setIsLoadingData(true);
-    console.log(`Fetching data for role: ${roleToLoad}`);
 
     switch (roleToLoad) {
       case "Administrator":
@@ -177,8 +196,13 @@ async function loadAuditLogs() {
         const savedUser = localStorage.getItem("currentUser");
         const token = localStorage.getItem("token"); // Assuming you store the JWT token here
 
-        // 1. If NO token/user exists, stay on the Login page
-        if (!savedUser || !token) {
+        // 1. If NO token/user exists or token is expired, stay on the Login page
+        if (!savedUser || !token || isTokenExpired(token)) {
+          if (token && isTokenExpired(token)) {
+            localStorage.removeItem("currentUser");
+            localStorage.removeItem("token");
+            localStorage.removeItem("accountType");
+          }
           setIsAuthenticated(false);
           setIsInitializing(false);
           return;
@@ -231,7 +255,7 @@ async function loadAuditLogs() {
     const interval = setInterval(async () => {
       try {
         const data = await apiFetch("/notifications");
-        setNotifications(data);
+        setNotifications(Array.isArray(data) ? data : (data?.notifications || []));
       } catch (err) {
         // Silently fail - polling is non-critical
       }
@@ -302,32 +326,110 @@ const resolvedActiveClient =
     setCurrentUser(null);
     setActiveClient(null);
     setIsAuthenticated(false);
+    setTickets([]);
+    setTasks([]);
+    setNotifications([]);
+    setAuditLogs([]);
+    setUsers([]);
+    setClients([]);
   };
 
   // Marked Single Notification Read
-  const handleMarkNotificationRead = (id: string) => {
+  const handleMarkNotificationRead = async (id: string) => {
+    const previousNotifications = notifications;
     setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, status: "Read", readDate: new Date().toISOString() } : n))
+      prev.map((n) => (n.id === id ? { ...n, status: "Read" as const, readDate: new Date().toISOString() } : n))
     );
+
+    try {
+      const res = await apiFetch(`/notifications/${id}/read`, {
+        method: "PUT",
+        throwOn403: true,
+      } as any);
+
+      if (!res || res.success === false) {
+        throw new Error(res?.message || "Failed to mark notification as read.");
+      }
+    } catch (err) {
+      console.error("Failed to mark notification as read:", err);
+      setNotifications(previousNotifications);
+      setGlobalError(err instanceof Error ? err.message : "Failed to mark notification as read.");
+      setShowToast(true);
+    }
   };
 
-  const handleClearNotifications = () => {
+  const handleClearNotifications = async () => {
     const targetId = currentUser ? currentUser.id : activeClient ? activeClient.id : "";
+    if (!targetId) return;
+
+    const previousNotifications = notifications;
     setNotifications((prev) => prev.filter((n) => n.userId !== targetId));
+
+    try {
+      const res = await apiFetch(`/notifications/user/${targetId}`, {
+        method: "DELETE",
+        throwOn403: true,
+      } as any);
+
+      if (!res || res.success === false) {
+        throw new Error(res?.message || "Failed to clear notifications.");
+      }
+    } catch (err) {
+      console.error("Failed to clear notifications:", err);
+      setNotifications(previousNotifications);
+      setGlobalError(err instanceof Error ? err.message : "Failed to clear notifications.");
+      setShowToast(true);
+    }
   };
 
   // Notification Center Handlers
-  const handleNotificationMarkAllAsRead = () => {
+  const handleNotificationMarkAllAsRead = async () => {
     const targetId = currentUser ? currentUser.id : activeClient ? activeClient.id : "";
+    if (!targetId) return;
+
+    const previousNotifications = notifications;
     setNotifications((prev) =>
       prev.map((n) =>
         n.userId === targetId ? { ...n, status: "Read" as const, readDate: new Date().toISOString() } : n
       )
     );
+
+    try {
+      const res = await apiFetch(`/notifications/user/${targetId}/read-all`, {
+        method: "PUT",
+        throwOn403: true,
+      } as any);
+
+      if (!res || res.success === false) {
+        throw new Error(res?.message || "Failed to mark all notifications as read.");
+      }
+    } catch (err) {
+      console.error("Failed to mark all notifications as read:", err);
+      setNotifications(previousNotifications);
+      setGlobalError(err instanceof Error ? err.message : "Failed to mark all notifications as read.");
+      setShowToast(true);
+    }
   };
 
-  const handleNotificationDelete = (id: string) => {
+  const handleNotificationDelete = async (id: string) => {
+    const previousNotifications = notifications;
     setNotifications((prev) => prev.filter((n) => n.id !== id));
+
+    try {
+      const res = await apiFetch(`/notifications/${id}`, {
+        method: "DELETE",
+        throwOn403: true,
+      } as any);
+
+      if (!res || res.success === false) {
+        throw new Error(res?.message || "Failed to delete notification.");
+      }
+    } catch (err) {
+      console.error("Failed to delete notification:", err);
+      setNotifications(previousNotifications);
+      setGlobalError(err instanceof Error ? err.message : "Failed to delete notification.");
+      setShowToast(true);
+    }
   };
 
   const handleOpenNotificationCenter = () => {
@@ -479,7 +581,6 @@ const handleDeleteClient = async (id: string) => {
     const freshUser: User = {
       ...empInput,
       id: newId,
-      passwordHash: `${empInput.fullName.toLowerCase().split(" ")[0]}123`,
       createdDate: new Date().toISOString(),
       updatedDate: new Date().toISOString(),
     };
@@ -617,7 +718,10 @@ const handleDeleteTicket = async (ticketId: string) => {
 }) => {
   try {
     const newId = `TKT-${Math.floor(1000 + Math.random() * 9000)}`;
-    const targetCli = activeClient || clients[0];
+    const targetCli = activeClient || (currentUser?.role === "Client" ? (currentUser as any) : null) || clients[0];
+    if (!targetCli?.id) {
+      throw new Error("Unable to identify client account for ticket submission.");
+    }
 
     const freshTicket: Ticket = {
       id: newId,
@@ -643,14 +747,16 @@ const handleDeleteTicket = async (ticketId: string) => {
 
     setGlobalError(`Ticket ${newId} created successfully!`);
     setShowToast(true);
-    const admin = users.find((u) => u.id === "U-1") || users[0];
+    const admin = users.find((u) => u.role === "Administrator") || users[0];
 
-    triggerSystemNotification(
-      admin.id,
-      "Ticket Update",
-      `New Ticket Case: ${newId}`,
-      `Support request submitted by ${targetCli.companyName}: '${freshTicket.subject}'.`
-    );
+    if (admin) {
+      triggerSystemNotification(
+        admin.id,
+        "Ticket Update",
+        `New Ticket Case: ${newId}`,
+        `Support request submitted by ${targetCli.companyName || targetCli.fullName || "Client"}: '${freshTicket.subject}'.`
+      );
+    }
 
     // Notify Client
     triggerSystemNotification(
@@ -677,17 +783,18 @@ const handleDeleteTicket = async (ticketId: string) => {
 
     if (!ticket) return;
 
-    const updatedTicket = {
-      ...ticket,
-      status,
-      employeeNotes: notes ?? ticket.employeeNotes,
-      resolutionSummary: resolution ?? ticket.resolutionSummary,
-      updatedDate: new Date().toISOString(),
-    };
+    // Send only permitted fields to prevent sending restricted fields
+    const payload: Record<string, any> = { status };
+    if (notes !== undefined) {
+      payload.employeeNotes = notes;
+    }
+    if (resolution !== undefined) {
+      payload.resolutionSummary = resolution;
+    }
 
     await apiFetch(`/tickets/${ticketId}`, {
       method: "PUT",
-      body: JSON.stringify(updatedTicket),
+      body: JSON.stringify(payload),
     });
 
     await loadTickets();
@@ -722,17 +829,16 @@ const handleDeleteTicket = async (ticketId: string) => {
 
     if (!ticket) return;
 
-    const updatedTicket = {
-      ...ticket,
+    // Send only permitted client closure fields
+    const payload = {
       status: "Closed",
       satisfactionRating: rating,
-      satisfactionNotes: notes,
-      updatedDate: new Date().toISOString(),
+      satisfactionNotes: notes || "",
     };
 
     await apiFetch(`/tickets/${ticketId}`, {
       method: "PUT",
-      body: JSON.stringify(updatedTicket),
+      body: JSON.stringify(payload),
     });
 
     await loadTickets();
@@ -815,12 +921,12 @@ const handleReopenTask = async (taskId: string) => {
 ) => {
   try {
     const newId = `TSK-${Math.floor(200 + Math.random() * 900)}`;
-    const admin = users.find((u) => u.id === "U-1") || users[0];
+    const admin = users.find((u) => u.role === "Administrator") || currentUser || users[0];
 
     const freshTask: Task = {
       ...taskInput,
       id: newId,
-      assignedBy: admin.id,
+      assignedBy: admin?.id || "admin",
       escalationStatus: "No",
       createdDate: new Date().toISOString(),
       updatedDate: new Date().toISOString(),
@@ -858,20 +964,18 @@ const handleReopenTask = async (taskId: string) => {
 
     if (!taskObj) return;
 
-    const updatedTask = {
-      ...taskObj,
-      status,
-      completionNotes: notes ?? taskObj.completionNotes,
-      completionDate:
-        status === "Completed"
-          ? new Date().toISOString()
-          : taskObj.completionDate,
-      updatedDate: new Date().toISOString(),
-    };
+    // Send only permitted fields to prevent sending restricted fields
+    const payload: Record<string, any> = { status };
+    if (notes !== undefined) {
+      payload.completionNotes = notes;
+    }
+    if (status === "Completed") {
+      payload.completionDate = new Date().toISOString();
+    }
 
     await apiFetch(`/tasks/${taskId}`, {
       method: "PUT",
-      body: JSON.stringify(updatedTask),
+      body: JSON.stringify(payload),
     });
 
     await loadTasks();
@@ -880,7 +984,10 @@ const handleReopenTask = async (taskId: string) => {
     setShowToast(true);
 
     if (status === "Completed") {
-      const mgrUser = users.find((u) => u.id === "U-2") || users[0];
+      const mgrUser = (currentUser?.managerId ? users.find((u) => u.id === currentUser.managerId) : null)
+        || users.find((u) => u.role === "Manager")
+        || users.find((u) => u.role === "Administrator")
+        || users[0];
       // The user completing the task is the currently logged-in user.
       if (currentUser && mgrUser) {
         triggerSystemNotification(
@@ -1044,8 +1151,6 @@ if (showChangePassword) {
         })()}
         onBack={async () => {
           setShowChangePassword(false);
-          console.log("Loading dashboard data...");
-
           await loadAllData(activeRole);
         }}
         onSuccess={async () => {
@@ -1110,18 +1215,8 @@ if (showChangePassword) {
           <div className="h-12 w-12 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent"></div>
         </div>
       )}
-      {activeRole === "Client" && (
-        (() => {
-          console.log("Active Role:", activeRole);
-          console.log("Clients:", clients);
-          console.log("Active Client ID:", activeClientId);
-          console.log("Active Client:", activeClient);
-          return null;
-        })()
-      )}
-
+      {/* Main Grid Viewport */}
       <ErrorBoundary>
-        {/* Main Grid Viewport */}
         <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
           
           {/* Dynamic routing boards based on active perspective role */}
@@ -1154,7 +1249,7 @@ if (showChangePassword) {
 
           {activeRole === "Manager" && (
             <ManagerDashboard
-              currentManager={currentUser || users.find((u) => u.id === "U-2")!}
+              currentManager={currentUser || users.find((u) => u.role === "Manager") || users[0]}
               systemUsers={users}
               clients={clients}
               tickets={tickets}
@@ -1165,7 +1260,7 @@ if (showChangePassword) {
 
           {activeRole === "Employee" && (
             <EmployeeDashboard
-              currentEmployee={currentUser || users.find((u) => u.id === "U-3")!}
+              currentEmployee={currentUser || users.find((u) => u.role === "Employee") || users[0]}
               clients={clients}
               tickets={tickets}
               tasks={tasks}
@@ -1211,6 +1306,7 @@ if (showChangePassword) {
             <button
               onClick={() => setShowToast(false)}
               className="absolute top-1 right-1 text-white/80 hover:text-white"
+              aria-label="Close notification"
             >
               &times;
             </button>

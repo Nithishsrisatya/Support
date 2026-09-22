@@ -87,7 +87,8 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 // -----------------------------------------------------
 // Rate Limiting
@@ -164,13 +165,24 @@ app.get("/api/state", authenticateToken, authorizeRoles(["Administrator"]), asyn
 // Health Check
 // -----------------------------------------------------
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    success: true,
-    database: "Connected",
-    server: "Running",
-    timestamp: new Date(),
-  });
+app.get("/api/health", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({
+      success: true,
+      database: "Connected",
+      server: "Running",
+      timestamp: new Date(),
+    });
+  } catch (error) {
+    console.error("[Health Check] Database connection ping failed:", error);
+    res.status(503).json({
+      success: false,
+      database: "Disconnected",
+      server: "Running",
+      timestamp: new Date(),
+    });
+  }
 });
 // -----------------------------------------------------
 // Email Logs API
@@ -226,18 +238,32 @@ app.get("*", (req, res) => {
 // -----------------------------------------------------
 
 app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  const statusCode = typeof err.status === "number" && err.status >= 400 && err.status < 600 ? err.status : 500;
+  let statusCode = typeof err.status === "number" && err.status >= 400 && err.status < 600 ? err.status : 500;
+  let message = err.message || "An unexpected error occurred.";
+
+  // Handle entity.too.large from body-parser
+  if (err.type === "entity.too.large" || statusCode === 413) {
+    statusCode = 413;
+    message = "Request payload too large (maximum 1MB allowed).";
+  }
+
+  // Handle malformed JSON body
+  if (err instanceof SyntaxError && "body" in err) {
+    statusCode = 400;
+    message = "Malformed JSON in request body.";
+  }
+
   const isProd = process.env.NODE_ENV === "production";
 
   if (!isProd) {
     console.error("Express Error Handler:", err);
   } else {
-    console.error(`[ERROR] ${req.method} ${req.path} -> ${err.message || "Internal Server Error"}`);
+    console.error(`[ERROR] ${req.method} ${req.path} -> ${message}`);
   }
 
   res.status(statusCode).json({
     success: false,
-    message: isProd && statusCode === 500 ? "Internal Server Error." : err.message || "An unexpected error occurred.",
+    message: isProd && statusCode === 500 ? "Internal Server Error." : message,
     ...(isProd ? {} : { stack: err.stack }),
   });
 });

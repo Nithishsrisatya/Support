@@ -41,6 +41,197 @@ export async function getAllTasks() {
   return result.rows;
 }
 
+export async function getTasksForManager(teamIds: string[], managerId: string) {
+  const result = await pool.query(
+    `
+    SELECT
+      id,
+      title,
+      description,
+      task_category AS "taskCategory",
+      assigned_by AS "assignedBy",
+      assigned_to AS "assignedTo",
+      start_date AS "startDate",
+      due_date AS "dueDate",
+      priority,
+      status,
+      escalation_status AS "escalationStatus",
+      completion_date AS "completionDate",
+      completed_at AS "completedAt",
+      completion_notes AS "completionNotes",
+      progress_percentage AS "progressPercentage",
+      review_status AS "reviewStatus",
+      manager_notes AS "managerNotes",
+      reviewed_by AS "reviewedBy",
+      reviewed_date AS "reviewedDate",
+      created_date AS "createdDate",
+      updated_date AS "updatedDate",
+      CASE WHEN due_date IS NOT NULL AND status NOT IN ('Completed', 'Escalated') AND due_date < NOW() THEN true ELSE false END AS "isOverdue"
+    FROM tasks
+    WHERE (assigned_to = ANY($1::varchar[]) OR assigned_by = $2 OR assigned_to IS NULL)
+    ORDER BY created_date DESC;
+    `,
+    [teamIds, managerId]
+  );
+  return result.rows;
+}
+
+export async function getTasksForEmployee(employeeId: string) {
+  const result = await pool.query(
+    `
+    SELECT
+      id,
+      title,
+      description,
+      task_category AS "taskCategory",
+      assigned_by AS "assignedBy",
+      assigned_to AS "assignedTo",
+      start_date AS "startDate",
+      due_date AS "dueDate",
+      priority,
+      status,
+      escalation_status AS "escalationStatus",
+      completion_date AS "completionDate",
+      completed_at AS "completedAt",
+      completion_notes AS "completionNotes",
+      progress_percentage AS "progressPercentage",
+      review_status AS "reviewStatus",
+      manager_notes AS "managerNotes",
+      reviewed_by AS "reviewedBy",
+      reviewed_date AS "reviewedDate",
+      created_date AS "createdDate",
+      updated_date AS "updatedDate",
+      CASE WHEN due_date IS NOT NULL AND status NOT IN ('Completed', 'Escalated') AND due_date < NOW() THEN true ELSE false END AS "isOverdue"
+    FROM tasks
+    WHERE assigned_to = $1
+    ORDER BY created_date DESC;
+    `,
+    [employeeId]
+  );
+  return result.rows;
+}
+
+export async function searchTasks(filters: {
+  search?: string;
+  status?: string;
+  priority?: string;
+  taskCategory?: string;
+  task_category?: string;
+  assignedTo?: string;
+  assigned_to?: string;
+  assignedToIn?: string[];
+  assignedBy?: string;
+  assigned_by?: string;
+  fromDate?: string;
+  toDate?: string;
+  page?: number;
+  limit?: number;
+}) {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let paramIndex = 1;
+
+  if (filters.search) {
+    conditions.push(`(t.title ILIKE $${paramIndex} OR t.description ILIKE $${paramIndex})`);
+    params.push(`%${filters.search}%`);
+    paramIndex++;
+  }
+  if (filters.status) {
+    conditions.push(`t.status = $${paramIndex}`);
+    params.push(filters.status);
+    paramIndex++;
+  }
+  if (filters.priority) {
+    conditions.push(`t.priority = $${paramIndex}`);
+    params.push(filters.priority);
+    paramIndex++;
+  }
+  const category = filters.taskCategory || (filters as any).task_category;
+  if (category) {
+    conditions.push(`t.task_category = $${paramIndex}`);
+    params.push(category);
+    paramIndex++;
+  }
+  const assignedTo = filters.assignedTo || (filters as any).assigned_to;
+  if (filters.assignedToIn && filters.assignedToIn.length > 0) {
+    conditions.push(`(t.assigned_to = ANY($${paramIndex}::varchar[]) OR t.assigned_to IS NULL)`);
+    params.push(filters.assignedToIn);
+    paramIndex++;
+  } else if (assignedTo) {
+    conditions.push(`t.assigned_to = $${paramIndex}`);
+    params.push(assignedTo);
+    paramIndex++;
+  }
+  const assignedBy = filters.assignedBy || (filters as any).assigned_by;
+  if (assignedBy) {
+    conditions.push(`t.assigned_by = $${paramIndex}`);
+    params.push(assignedBy);
+    paramIndex++;
+  }
+  if (filters.fromDate) {
+    conditions.push(`t.created_date >= $${paramIndex}`);
+    params.push(filters.fromDate);
+    paramIndex++;
+  }
+  if (filters.toDate) {
+    conditions.push(`t.created_date <= $${paramIndex}`);
+    params.push(filters.toDate);
+    paramIndex++;
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const page = Math.max(1, parseInt(String(filters.page || 1), 10) || 1);
+  const limit = Math.max(1, Math.min(100, parseInt(String(filters.limit || 50), 10) || 50));
+  const offset = Math.max(0, (page - 1) * limit);
+
+  const countResult = await pool.query(
+    `SELECT COUNT(*) FROM tasks t ${whereClause}`,
+    params
+  );
+  const totalCount = parseInt(countResult.rows[0].count, 10);
+
+  const result = await pool.query(
+    `
+    SELECT
+      t.id,
+      t.title,
+      t.description,
+      t.task_category AS "taskCategory",
+      t.assigned_by AS "assignedBy",
+      t.assigned_to AS "assignedTo",
+      t.start_date AS "startDate",
+      t.due_date AS "dueDate",
+      t.priority,
+      t.status,
+      t.escalation_status AS "escalationStatus",
+      t.completion_date AS "completionDate",
+      t.completed_at AS "completedAt",
+      t.completion_notes AS "completionNotes",
+      t.progress_percentage AS "progressPercentage",
+      t.review_status AS "reviewStatus",
+      t.manager_notes AS "managerNotes",
+      t.reviewed_by AS "reviewedBy",
+      t.reviewed_date AS "reviewedDate",
+      t.created_date AS "createdDate",
+      t.updated_date AS "updatedDate",
+      CASE WHEN t.due_date IS NOT NULL AND t.status NOT IN ('Completed', 'Escalated') AND t.due_date < NOW() THEN true ELSE false END AS "isOverdue"
+    FROM tasks t
+    ${whereClause}
+    ORDER BY t.created_date DESC
+    LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `,
+    [...params, limit, offset]
+  );
+
+  return {
+    tasks: result.rows,
+    total: totalCount,
+    page,
+    limit,
+    totalPages: Math.ceil(totalCount / limit),
+  };
+}
+
 export async function getTaskById(id: string) {
   const result = await pool.query(
     `
@@ -197,9 +388,13 @@ export async function updateTask(
     const updatedTask = updateResult.rows[0];
 
     // Clear deadline notifications if reopened or due date updated
+    const isTaskDueDateChanged = taskUpdates.dueDate && (
+      !existingTask.due_date ||
+      new Date(taskUpdates.dueDate).getTime() !== new Date(existingTask.due_date).getTime()
+    );
     if (
       (existingTask.status === "Completed" && taskUpdates.status && taskUpdates.status !== "Completed") ||
-      (taskUpdates.dueDate && taskUpdates.dueDate !== existingTask.due_date)
+      isTaskDueDateChanged
     ) {
       await client.query(
         `DELETE FROM deadline_notifications WHERE item_type = 'Task' AND item_id = $1`,

@@ -1,5 +1,21 @@
 import { Notification, NotificationType, NotificationStatus } from "./types";
 
+export function isTokenExpired(token: string): boolean {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return true;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const jsonStr = typeof atob === "function"
+      ? atob(base64)
+      : Buffer.from(base64, "base64").toString("utf-8");
+    const payload = JSON.parse(jsonStr);
+    if (!payload.exp) return false;
+    return payload.exp * 1000 < Date.now();
+  } catch {
+    return true;
+  }
+}
+
 // Humanize ISO date strings
 export function formatDateTime(isoString: string): string {
   if (!isoString) return "N/A";
@@ -25,10 +41,29 @@ export function formatDate(dateString: string): string {
 }
 
 // Generate humanized relative time
-export function getRelativeTime(isoString: string, currentIsoTime: string = "2026-06-16T08:59:31-07:00"): string {
+export function getRelativeTime(isoString: string, currentIsoTime?: string): string {
+  if (!isoString) return "—";
   const past = new Date(isoString).getTime();
-  const current = new Date(currentIsoTime).getTime();
+  if (isNaN(past)) return "—";
+
+  const current = currentIsoTime ? new Date(currentIsoTime).getTime() : Date.now();
+  if (isNaN(current)) return "—";
+
   const diffMs = current - past;
+
+  // Handle future timestamps
+  if (diffMs < 0) {
+    const futureMs = Math.abs(diffMs);
+    const futureSec = Math.floor(futureMs / 1000);
+    const futureMin = Math.floor(futureSec / 60);
+    const futureHours = Math.floor(futureMin / 60);
+    const futureDays = Math.floor(futureHours / 24);
+
+    if (futureSec < 60) return "In a few seconds";
+    if (futureMin < 60) return `In ${futureMin}m`;
+    if (futureHours < 24) return `In ${futureHours}h`;
+    return `In ${futureDays}d`;
+  }
 
   const seconds = Math.floor(diffMs / 1000);
   const minutes = Math.floor(seconds / 60);

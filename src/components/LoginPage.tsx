@@ -65,12 +65,8 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
     }
     
     localStorage.setItem("token", response.token);
-    localStorage.setItem(
-  "currentUser",
-  JSON.stringify(response.user)
-);
-localStorage.setItem("accountType", response.user.userType);
-console.log(response.user);
+    localStorage.setItem("currentUser", JSON.stringify(response.user));
+    localStorage.setItem("accountType", response.user.userType);
     onLoginSuccess(response.user);
   } catch (err: any) {
     console.error("Login request failed:", err);

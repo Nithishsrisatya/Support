@@ -70,22 +70,191 @@ SELECT
 }
 
 // ============================================================
-// GET TICKET BY ID
+// GET TICKET BY ID - DIRECT INDEXED LOOKUP
 // ============================================================
 export async function getTicketById(id: string) {
-  const tickets = await getAllTickets();
-  return tickets.find(ticket => ticket.id === id) || null;
-}
-
-// ============================================================
-// GET TICKET BY ID - DIRECT QUERY
-// ============================================================
-export async function getTicketByIdDirect(id: string) {
   const result = await pool.query(
-    `SELECT * FROM tickets WHERE id = $1`,
+    `
+    SELECT
+      t.id,
+      t.subject,
+      t.description,
+      t.category,
+      t.priority,
+      t.status,
+      t.assigned_to AS "assignedTo",
+      t.client_id AS "clientId",
+      t.created_date AS "createdDate",
+      t.updated_date AS "updatedDate",
+      t.due_date AS "dueDate",
+      t.completed_at AS "completedAt",
+      t.resolution_summary AS "resolutionSummary",
+      t.resolution_date AS "resolutionDate",
+      t.employee_notes AS "employeeNotes",
+      t.satisfaction_rating AS "satisfactionRating",
+      t.satisfaction_notes AS "satisfactionNotes",
+      CASE WHEN t.due_date IS NOT NULL AND t.status NOT IN ('Resolved', 'Closed') AND t.due_date < NOW() THEN true ELSE false END AS "isOverdue",
+      json_agg(json_build_object(
+        'timestamp', th.timestamp,
+        'status', th.status,
+        'updatedBy', th.updated_by,
+        'comment', th.comment
+      )) AS history
+    FROM tickets t
+    LEFT JOIN ticket_history th ON t.id = th.ticket_id
+    WHERE t.id = $1
+    GROUP BY t.id
+    `,
     [id]
   );
   return result.rows[0] || null;
+}
+
+// ============================================================
+// GET TICKET BY ID - DIRECT QUERY (alias for backwards compatibility)
+// ============================================================
+export async function getTicketByIdDirect(id: string) {
+  return getTicketById(id);
+}
+
+// ============================================================
+// ROLE-FILTERED TICKET QUERIES (Executed in PostgreSQL)
+// ============================================================
+export async function getTicketsForManager(teamIds: string[], includeUnassigned: boolean = false) {
+  if (teamIds.length === 0 && !includeUnassigned) {
+    return [];
+  }
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (teamIds.length > 0) {
+    params.push(teamIds);
+    if (includeUnassigned) {
+      conditions.push(`(t.assigned_to = ANY($1::varchar[]) OR t.assigned_to IS NULL)`);
+    } else {
+      conditions.push(`t.assigned_to = ANY($1::varchar[])`);
+    }
+  } else if (includeUnassigned) {
+    conditions.push(`t.assigned_to IS NULL`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const result = await pool.query(
+    `
+    SELECT
+      t.id,
+      t.subject,
+      t.description,
+      t.category,
+      t.priority,
+      t.status,
+      t.assigned_to AS "assignedTo",
+      t.client_id AS "clientId",
+      t.created_date AS "createdDate",
+      t.updated_date AS "updatedDate",
+      t.due_date AS "dueDate",
+      t.completed_at AS "completedAt",
+      t.resolution_summary AS "resolutionSummary",
+      t.resolution_date AS "resolutionDate",
+      t.employee_notes AS "employeeNotes",
+      t.satisfaction_rating AS "satisfactionRating",
+      t.satisfaction_notes AS "satisfactionNotes",
+      CASE WHEN t.due_date IS NOT NULL AND t.status NOT IN ('Resolved', 'Closed') AND t.due_date < NOW() THEN true ELSE false END AS "isOverdue",
+      json_agg(json_build_object(
+        'timestamp', th.timestamp,
+        'status', th.status,
+        'updatedBy', th.updated_by,
+        'comment', th.comment
+      )) AS history
+    FROM tickets t
+    LEFT JOIN ticket_history th ON t.id = th.ticket_id
+    ${whereClause}
+    GROUP BY t.id
+    ORDER BY t.created_date DESC
+    `,
+    params
+  );
+  return result.rows;
+}
+
+export async function getTicketsForEmployee(employeeId: string) {
+  const result = await pool.query(
+    `
+    SELECT
+      t.id,
+      t.subject,
+      t.description,
+      t.category,
+      t.priority,
+      t.status,
+      t.assigned_to AS "assignedTo",
+      t.client_id AS "clientId",
+      t.created_date AS "createdDate",
+      t.updated_date AS "updatedDate",
+      t.due_date AS "dueDate",
+      t.completed_at AS "completedAt",
+      t.resolution_summary AS "resolutionSummary",
+      t.resolution_date AS "resolutionDate",
+      t.employee_notes AS "employeeNotes",
+      t.satisfaction_rating AS "satisfactionRating",
+      t.satisfaction_notes AS "satisfactionNotes",
+      CASE WHEN t.due_date IS NOT NULL AND t.status NOT IN ('Resolved', 'Closed') AND t.due_date < NOW() THEN true ELSE false END AS "isOverdue",
+      json_agg(json_build_object(
+        'timestamp', th.timestamp,
+        'status', th.status,
+        'updatedBy', th.updated_by,
+        'comment', th.comment
+      )) AS history
+    FROM tickets t
+    LEFT JOIN ticket_history th ON t.id = th.ticket_id
+    WHERE t.assigned_to = $1
+    GROUP BY t.id
+    ORDER BY t.created_date DESC
+    `,
+    [employeeId]
+  );
+  return result.rows;
+}
+
+export async function getTicketsForClient(clientId: string) {
+  const result = await pool.query(
+    `
+    SELECT
+      t.id,
+      t.subject,
+      t.description,
+      t.category,
+      t.priority,
+      t.status,
+      t.assigned_to AS "assignedTo",
+      t.client_id AS "clientId",
+      t.created_date AS "createdDate",
+      t.updated_date AS "updatedDate",
+      t.due_date AS "dueDate",
+      t.completed_at AS "completedAt",
+      t.resolution_summary AS "resolutionSummary",
+      t.resolution_date AS "resolutionDate",
+      t.employee_notes AS "employeeNotes",
+      t.satisfaction_rating AS "satisfactionRating",
+      t.satisfaction_notes AS "satisfactionNotes",
+      CASE WHEN t.due_date IS NOT NULL AND t.status NOT IN ('Resolved', 'Closed') AND t.due_date < NOW() THEN true ELSE false END AS "isOverdue",
+      json_agg(json_build_object(
+        'timestamp', th.timestamp,
+        'status', th.status,
+        'updatedBy', th.updated_by,
+        'comment', th.comment
+      )) AS history
+    FROM tickets t
+    LEFT JOIN ticket_history th ON t.id = th.ticket_id
+    WHERE t.client_id = $1
+    GROUP BY t.id
+    ORDER BY t.created_date DESC
+    `,
+    [clientId]
+  );
+  return result.rows;
 }
 
 // ============================================================
@@ -97,6 +266,8 @@ export async function searchTickets(filters: {
   priority?: string;
   category?: string;
   assignedTo?: string;
+  assignedToIn?: string[];
+  includeUnassigned?: boolean;
   clientId?: string;
   fromDate?: string;
   toDate?: string;
@@ -127,7 +298,25 @@ export async function searchTickets(filters: {
     params.push(filters.category);
     paramIndex++;
   }
-  if (filters.assignedTo) {
+  if (filters.assignedToIn && filters.assignedToIn.length > 0) {
+    if (filters.assignedTo) {
+      if (filters.assignedToIn.includes(filters.assignedTo)) {
+        conditions.push(`t.assigned_to = $${paramIndex}`);
+        params.push(filters.assignedTo);
+        paramIndex++;
+      } else {
+        conditions.push(`1=0`);
+      }
+    } else {
+      if (filters.includeUnassigned) {
+        conditions.push(`(t.assigned_to = ANY($${paramIndex}::varchar[]) OR t.assigned_to IS NULL)`);
+      } else {
+        conditions.push(`t.assigned_to = ANY($${paramIndex}::varchar[])`);
+      }
+      params.push(filters.assignedToIn);
+      paramIndex++;
+    }
+  } else if (filters.assignedTo) {
     conditions.push(`t.assigned_to = $${paramIndex}`);
     params.push(filters.assignedTo);
     paramIndex++;
@@ -150,9 +339,9 @@ export async function searchTickets(filters: {
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   
-  const page = filters.page || 1;
-  const limit = filters.limit || 50;
-  const offset = (page - 1) * limit;
+  const page = Math.max(1, parseInt(String(filters.page || 1), 10) || 1);
+  const limit = Math.max(1, Math.min(100, parseInt(String(filters.limit || 50), 10) || 50));
+  const offset = Math.max(0, (page - 1) * limit);
 
   const countResult = await pool.query(`
     SELECT COUNT(*) FROM tickets t ${whereClause}
@@ -286,9 +475,6 @@ export async function updateTicket(id: string, updates: any, changedBy: string =
 
     const mergedTicket = { ...oldTicket.rows[0], ...updates };
 
-    console.log("Merged Ticket:", mergedTicket);
-    console.log("assigned_to:", mergedTicket.assigned_to);
-
 // Auto-set completed_at when status changes to Resolved or Closed
     const isCompleting = (updates.status === "Resolved" || updates.status === "Closed") && oldStatus !== "Resolved" && oldStatus !== "Closed";
     const isReopening = (oldStatus === "Resolved" || oldStatus === "Closed") && updates.status && !["Resolved", "Closed"].includes(updates.status);
@@ -333,7 +519,11 @@ export async function updateTicket(id: string, updates: any, changedBy: string =
     const updatedTicket = result.rows[0];
 
     // Clear deadline notifications if reopened or due date modified
-    if (isReopening || (updates.due_date && updates.due_date !== oldTicket.rows[0].due_date)) {
+    const isDueDateChanged = updates.due_date && (
+      !oldTicket.rows[0].due_date ||
+      new Date(updates.due_date).getTime() !== new Date(oldTicket.rows[0].due_date).getTime()
+    );
+    if (isReopening || isDueDateChanged) {
       await client.query(
         `DELETE FROM deadline_notifications WHERE item_type = 'Ticket' AND item_id = $1`,
         [id]

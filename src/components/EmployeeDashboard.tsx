@@ -8,6 +8,7 @@ import {
 import TicketDetailModal from "./TicketDetailModal";
 import HomeDashboard from "./HomeDashboard";
 import DeadlineCalendar from "./DeadlineCalendar";
+import { apiFetch } from "../services/api";
 
 interface EmployeeDashboardProps {
   currentEmployee: User;
@@ -38,6 +39,7 @@ const [activeTab, setActiveTab] = useState<"dashboard" | "tickets" | "tasks" | "
   const [resolutionNotes, setResolutionNotes] = useState("");
   const [taskNotes, setTaskNotes] = useState("");
   const [uploadedFileName, setUploadedFileName] = useState("");
+  const [selectedAttachment, setSelectedAttachment] = useState<File | null>(null);
 
   const employeeTickets = tickets.filter((t) => t.assignedTo === currentEmployee.id);
   const employeeTasks = tasks.filter((t) => t.assignedTo === currentEmployee.id);
@@ -49,9 +51,25 @@ const [activeTab, setActiveTab] = useState<"dashboard" | "tickets" | "tasks" | "
   const overdueTasks = employeeTasks.filter(t => t.isOverdue && t.status !== "Completed");
   const criticalTickets = employeeTickets.filter(t => t.status !== "Closed" && t.status !== "Resolved" && t.priority === "Critical");
 
-  const handleMockUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const ALLOWED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".txt", ".csv", ".docx", ".xlsx"];
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+  const handleAttachmentSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setUploadedFileName(e.target.files[0].name);
+      const file = e.target.files[0];
+      const ext = "." + (file.name.split(".").pop()?.toLowerCase() || "");
+      if (!ALLOWED_EXTENSIONS.includes(ext)) {
+        alert("Unsupported file type. Allowed formats: images (JPG, PNG, GIF, WebP), documents (PDF, DOCX, XLSX, TXT, CSV).");
+        e.target.value = "";
+        return;
+      }
+      if (file.size > MAX_FILE_SIZE) {
+        alert("File size exceeds 10 MB limit.");
+        e.target.value = "";
+        return;
+      }
+      setSelectedAttachment(file);
+      setUploadedFileName(file.name);
     }
   };
 
@@ -64,13 +82,27 @@ const [activeTab, setActiveTab] = useState<"dashboard" | "tickets" | "tasks" | "
     setViewingResolutionModal(null);
   };
 
-  const handleCompleteTaskSubmit = (e: React.FormEvent) => {
+  const handleCompleteTaskSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!completingTaskId) return;
-    const finalNote = uploadedFileName ? `${taskNotes} (Attached file: ${uploadedFileName})` : taskNotes;
-    onUpdateTaskStatus(completingTaskId, "Completed", finalNote);
+
+    if (selectedAttachment) {
+      try {
+        const formData = new FormData();
+        formData.append("file", selectedAttachment);
+        await apiFetch(`/tasks/${completingTaskId}/attachments`, {
+          method: "POST",
+          body: formData,
+        });
+      } catch (err: any) {
+        console.error("Failed to upload completion attachment:", err);
+      }
+    }
+
+    onUpdateTaskStatus(completingTaskId, "Completed", taskNotes);
     setTaskNotes("");
     setUploadedFileName("");
+    setSelectedAttachment(null);
     setViewingCompletionModal(null);
   };
 
@@ -370,8 +402,13 @@ const [activeTab, setActiveTab] = useState<"dashboard" | "tickets" | "tasks" | "
               </div>
               <div>
                 <label className="block font-bold text-zinc-700 mb-1.5">Attachment (Optional)</label>
-                <div className="flex items-center justify-between border-2 border-dashed border-zinc-200 rounded-xl p-4 hover:bg-zinc-50 cursor-pointer relative">
-                  <input type="file" onChange={handleMockUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+                <div className="relative flex items-center justify-center rounded-xl border border-dashed border-zinc-300 p-3 bg-zinc-50 hover:bg-zinc-100 transition-colors">
+                  <input
+                    type="file"
+                    onChange={handleAttachmentSelect}
+                    accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.txt,.csv,.docx,.xlsx"
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                  />
                   <div className="flex items-center gap-2">
                     <Upload className="h-5 w-5 text-zinc-400" />
                     <span className="text-zinc-600 font-medium">{uploadedFileName || "Choose file..."}</span>

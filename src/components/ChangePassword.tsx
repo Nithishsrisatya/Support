@@ -45,13 +45,13 @@ export default function ChangePassword({
 
     try {
       const currentUser = JSON.parse(
-  localStorage.getItem("currentUser") || "{}"
-);
+        localStorage.getItem("currentUser") || "{}"
+      );
 
-const endpoint =
-  currentUser.userType === "Client"
-    ? "/clients/change-password"
-    : "/users/change-password";
+      const isClient = currentUser.userType === "Client" || currentUser.role === "Client";
+      const endpoint = isClient
+        ? "/clients/change-password"
+        : "/users/change-password";
 
 
       const res = await apiFetch(endpoint, {

@@ -80,9 +80,25 @@ export default function TaskDetailModal({
     }
   }
 
+  const ALLOWED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".txt", ".csv", ".docx", ".xlsx"];
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const ext = "." + (file.name.split(".").pop()?.toLowerCase() || "");
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      alert("Unsupported file type. Allowed formats: images (JPG, PNG, GIF, WebP), documents (PDF, DOCX, XLSX, TXT, CSV).");
+      e.target.value = "";
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      alert("File size exceeds 10 MB limit.");
+      e.target.value = "";
+      return;
+    }
 
     setUploading(true);
     try {
@@ -95,9 +111,9 @@ export default function TaskDetailModal({
       });
 
       loadTaskData();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to upload file:", err);
-      alert("Failed to upload file. Please ensure file type and size are allowed.");
+      alert(err.message || "Failed to upload file. Please ensure file type and size are allowed.");
     } finally {
       setUploading(false);
       e.target.value = "";
@@ -262,7 +278,7 @@ export default function TaskDetailModal({
             <span className="text-xs font-semibold text-red-700">Task is overdue! Due date was {formatDateTime(task.dueDate)}</span>
           </div>
         )}
-        {status !== "Completed" && needsReview && isManager && (
+        {status === "Completed" && needsReview && isManager && (
           <div className="mx-5 mt-3 rounded-xl bg-amber-50 border border-amber-200 p-3 flex items-center gap-2">
             <ShieldAlert className="h-4 w-4 text-amber-600" />
             <span className="text-xs font-semibold text-amber-700">Task completed and awaiting your review</span>
@@ -515,6 +531,7 @@ export default function TaskDetailModal({
                         onChange={handleFileUpload}
                         className="absolute inset-0 opacity-0 cursor-pointer"
                         disabled={uploading}
+                        accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.txt,.csv,.docx,.xlsx"
                       />
                       <Paperclip className="h-6 w-6 text-zinc-400 mx-auto mb-2" />
                       <p className="text-sm text-zinc-500 font-medium">

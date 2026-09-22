@@ -106,11 +106,11 @@ export function getCalendarDeadlineStage(
  * Returns true if record was inserted (first time), or false if already sent.
  */
 export async function recordDeadlineNotification(
-  itemType: "Ticket" | "Task",
+  itemType: "Ticket" | "Task" | "Digest" | string,
   itemId: string,
-  stage: "DUE_TOMORROW" | "DUE_TODAY" | "OVERDUE",
+  stage: "DUE_TOMORROW" | "DUE_TODAY" | "OVERDUE" | "SLA_BREACH" | "WEEKLY_DIGEST" | string,
   recipientId: string,
-  recipientRole: "Assignee" | "Manager"
+  recipientRole: "Assignee" | "Manager" | "Administrator" | "Employee" | string
 ): Promise<boolean> {
   try {
     const result = await pool.query(
@@ -131,6 +131,29 @@ export async function recordDeadlineNotification(
     return (result.rowCount ?? 0) > 0;
   } catch (err) {
     console.error("Failed to record deadline notification:", err);
+    return false;
+  }
+}
+
+/**
+ * Deletes a recorded deadline notification. Used when email delivery fails
+ * so that subsequent scheduler executions can legitimately retry sending.
+ */
+export async function deleteDeadlineNotificationRecord(
+  itemType: "Ticket" | "Task" | "Digest" | string,
+  itemId: string,
+  stage: string,
+  recipientId: string
+): Promise<boolean> {
+  try {
+    const result = await pool.query(
+      `DELETE FROM deadline_notifications
+       WHERE item_type = $1 AND item_id = $2 AND stage = $3 AND recipient_id = $4`,
+      [itemType, itemId, stage, recipientId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  } catch (err) {
+    console.error("Failed to delete deadline notification record:", err);
     return false;
   }
 }
@@ -265,9 +288,12 @@ async function notifyRecipient({
       clientName,
     });
 
-    await sendEmail(recipientEmail, emailSubject, emailHtml);
+    await sendEmail(recipientEmail, emailSubject, emailHtml, { throwOnError: true });
   } catch (err) {
     console.error(`Failed to send deadline email to ${recipientEmail}:`, err);
+    // Delete recorded deadline notification so it can be legitimately retried on subsequent execution
+    await deleteDeadlineNotificationRecord(itemType, itemId, stage, recipientId);
+    return false;
   }
 
   return true;

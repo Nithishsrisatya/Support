@@ -72,7 +72,17 @@ export async function createClient(client: any) {
       created_date
     )
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-    RETURNING *
+    RETURNING
+      id,
+      company_name AS "companyName",
+      company_domain AS "companyDomain",
+      contact_person AS "contactPerson",
+      email,
+      phone_number AS "phoneNumber",
+      city,
+      status,
+      created_date AS "createdDate",
+      updated_date AS "updatedDate"
     `,
     [
       client.id,
@@ -115,7 +125,17 @@ export async function updateClient(id: string, client: any) {
       status = $7,
       updated_date = NOW()
     WHERE id = $8
-    RETURNING *
+    RETURNING
+      id,
+      company_name AS "companyName",
+      company_domain AS "companyDomain",
+      contact_person AS "contactPerson",
+      email,
+      phone_number AS "phoneNumber",
+      city,
+      status,
+      created_date AS "createdDate",
+      updated_date AS "updatedDate"
     `,
     [
       client.companyName,

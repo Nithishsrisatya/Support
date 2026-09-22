@@ -3,13 +3,13 @@ import bcrypt from "bcrypt";
 import { sendEmail } from "./emailService";
 import { welcomeEmail } from "../templates/welcomeEmail";
 import { resetPasswordConfirmationTemplate } from "../templates/operationalEmails";
+import { generateTemporaryPassword, isPredictablePassword } from "../utils/credentialUtils";
 export async function getAllUsers() {
   const result = await pool.query(`
     SELECT
       id,
       full_name AS "fullName",
       email,
-      password_hash AS "passwordHash",
       role,
       department,
       manager_id AS "managerId",
@@ -31,7 +31,6 @@ export async function getUserById(id: string) {
       id,
       full_name AS "fullName",
       email,
-      password_hash AS "passwordHash",
       role,
       department,
       manager_id AS "managerId",
@@ -48,8 +47,11 @@ export async function getUserById(id: string) {
   return result.rows[0] || null;
 }
 export async function createUser(user: any) {
-  // Save the plain password before hashing
-  const temporaryPassword = user.passwordHash;
+  // Determine plain password; generate secure temporary password if omitted or predictable
+  const candidatePassword = user.password || user.passwordHash;
+  const temporaryPassword = (!candidatePassword || isPredictablePassword(candidatePassword, user.fullName))
+    ? generateTemporaryPassword()
+    : candidatePassword;
 
   // Hash it
   const hashedPassword = await bcrypt.hash(temporaryPassword, 10);
@@ -73,7 +75,17 @@ export async function createUser(user: any) {
     VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW(),$9
     )
-    RETURNING *
+    RETURNING
+      id,
+      full_name AS "fullName",
+      email,
+      role,
+      department,
+      manager_id AS "managerId",
+      status,
+      created_date AS "createdDate",
+      updated_date AS "updatedDate",
+      first_login AS "firstLogin"
     `,
     [
       user.id,
@@ -125,22 +137,30 @@ export async function updateUser(id: string, updates: any) {
   const result = await pool.query(
     `
     UPDATE users
-SET
-  full_name = $1,
-  email = $2,
-  password_hash = $3,
-  role = $4,
-  department = $5,
-  manager_id = $6,
-  status = $7,
-  updated_date = NOW()
-WHERE id = $8
-RETURNING *
+    SET
+      full_name = $1,
+      email = $2,
+      role = $3,
+      department = $4,
+      manager_id = $5,
+      status = $6,
+      updated_date = NOW()
+    WHERE id = $7
+    RETURNING
+      id,
+      full_name AS "fullName",
+      email,
+      role,
+      department,
+      manager_id AS "managerId",
+      status,
+      created_date AS "createdDate",
+      updated_date AS "updatedDate",
+      first_login AS "firstLogin"
     `,
     [
       user.fullName,
       user.email,
-      user.passwordHash,
       user.role,
       user.department,
       user.managerId,
@@ -152,72 +172,123 @@ RETURNING *
   return result.rows[0];
 }
 
-export async function deleteUser(id: string) {
-  // Check Tickets
-  const ticketCount = await pool.query(
-    `
-    SELECT COUNT(*) AS count
-    FROM tickets
-    WHERE assigned_to = $1
-    `,
-    [id]
-  );
+export async function deleteUser(id: string, requestingUserId?: string) {
+  const client = await pool.connect();
 
-  // Check Tasks
-  const taskCount = await pool.query(
-    `
-    SELECT COUNT(*) AS count
-    FROM tasks
-    WHERE assigned_to = $1
-    `,
-    [id]
-  );
+  try {
+    await client.query("BEGIN");
 
-  // Check Notifications
-  const notificationCount = await pool.query(
-  `
-  DELETE FROM notifications
-  WHERE user_id = $1
-  `,
-  [id]
-);
+    // 1. Verify user exists and lock the row to avoid concurrency races
+    const userRes = await client.query(
+      `SELECT id, full_name, email, role, status FROM users WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
 
-  // Check Audit Logs
-  const auditCount = await pool.query(
-    `
-    SELECT COUNT(*) AS count
-    FROM audit_logs
-    WHERE user_id = $1
-    `,
-    [id]
-  );
+    if (userRes.rows.length === 0) {
+      throw new Error("User not found.");
+    }
 
-  const tickets = Number(ticketCount.rows[0].count);
-  const tasks = Number(taskCount.rows[0].count);
-  //const notifications = Number(notificationCount.rows[0].count);
-  const audits = Number(auditCount.rows[0].count);
+    // Prevent self-deletion if requesting user matches
+    if (requestingUserId && requestingUserId === id) {
+      throw new Error("Administrators cannot delete their own active account.");
+    }
 
- if (tickets > 0 || tasks > 0 || audits > 0) {
-  throw new Error(
-    `Cannot delete employee.
+    // 2. Pre-deletion validation: check all constraints BEFORE deleting any data
+    const ticketCount = await client.query(
+      `
+      SELECT COUNT(*) AS count
+      FROM tickets
+      WHERE assigned_to = $1
+      `,
+      [id]
+    );
+
+    const taskCount = await client.query(
+      `
+      SELECT COUNT(*) AS count
+      FROM tasks
+      WHERE assigned_to = $1
+      `,
+      [id]
+    );
+
+    const reportCount = await client.query(
+      `
+      SELECT COUNT(*) AS count
+      FROM users
+      WHERE manager_id = $1
+      `,
+      [id]
+    );
+
+    const tickets = Number(ticketCount.rows[0].count);
+    const tasks = Number(taskCount.rows[0].count);
+    const reports = Number(reportCount.rows[0].count);
+
+    if (tickets > 0 || tasks > 0) {
+      throw new Error(
+        `Cannot delete employee with active assigned workload.
 
 Assigned Tickets: ${tickets}
 Assigned Tasks: ${tasks}
-Audit Logs: ${audits}
 
+Reassign tickets and tasks before deleting, or use transfer.`
+      );
+    }
 
+    if (reports > 0) {
+      throw new Error(
+        `Cannot delete manager with ${reports} reporting employee(s). Reassign employees before deleting, or use transfer.`
+      );
+    }
 
-Deactivate the account instead.`
+    // 3. Atomically perform related dependent record cleanups inside transaction
+    // Handle tasks assigned_by (nullable foreign key)
+    await client.query(
+      `UPDATE tasks SET assigned_by = NULL WHERE assigned_by = $1`,
+      [id]
     );
-  }
 
-  await pool.query(
-    `
-    DELETE FROM users
-    WHERE id = $1
-    `,
-    [id]
-  );
+    // Delete user notifications
+    await client.query(
+      `DELETE FROM notifications WHERE user_id = $1`,
+      [id]
+    );
+
+    // Delete password reset tokens for user
+    await client.query(
+      `DELETE FROM password_reset_tokens WHERE user_id = $1`,
+      [id]
+    );
+
+    // Delete deadline & reminder deduplication tracking
+    await client.query(
+      `DELETE FROM deadline_notifications WHERE recipient_id = $1`,
+      [id]
+    );
+    await client.query(
+      `DELETE FROM weekly_pending_work_notifications WHERE recipient_id = $1`,
+      [id]
+    );
+
+    // 4. Delete user record
+    await client.query(
+      `DELETE FROM users WHERE id = $1`,
+      [id]
+    );
+
+    await client.query("COMMIT");
+
+    return {
+      success: true,
+      message: "User deleted successfully.",
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function transferAndDeleteUser(
@@ -228,6 +299,27 @@ export async function transferAndDeleteUser(
 
   try {
     await client.query("BEGIN");
+
+    // 1. Verify old user exists and lock the row
+    const oldUserRes = await client.query(
+      `SELECT id, full_name, email, role, status FROM users WHERE id = $1 FOR UPDATE`,
+      [oldUserId]
+    );
+    if (oldUserRes.rows.length === 0) {
+      throw new Error("Old employee not found.");
+    }
+
+    // 2. Verify new user exists and is active
+    const newUserRes = await client.query(
+      `SELECT id, full_name, email, role, status FROM users WHERE id = $1`,
+      [newUserId]
+    );
+    if (newUserRes.rows.length === 0) {
+      throw new Error("Replacement employee not found.");
+    }
+    if (newUserRes.rows[0].status !== "Active") {
+      throw new Error("Replacement employee is not active.");
+    }
 
     // 1️⃣ Transfer employees reporting to this manager
     await client.query(
@@ -249,12 +341,22 @@ export async function transferAndDeleteUser(
       [newUserId, oldUserId]
     );
 
-    // 3️⃣ Transfer tasks
+    // 3️⃣ Transfer tasks assigned_to
     await client.query(
       `
       UPDATE tasks
       SET assigned_to = $1
       WHERE assigned_to = $2
+      `,
+      [newUserId, oldUserId]
+    );
+
+    // Transfer tasks assigned_by
+    await client.query(
+      `
+      UPDATE tasks
+      SET assigned_by = $1
+      WHERE assigned_by = $2
       `,
       [newUserId, oldUserId]
     );
@@ -269,16 +371,23 @@ export async function transferAndDeleteUser(
       [newUserId, oldUserId]
     );
 
-    // Transfer Audit Logs
-await client.query(
-  `
-  UPDATE audit_logs
-  SET user_id = $1
-  WHERE user_id = $2
-  `,
-  [newUserId, oldUserId]
-);
-    // 5️⃣ Delete user
+    // Clean up old user's password reset tokens
+    await client.query(
+      `DELETE FROM password_reset_tokens WHERE user_id = $1`,
+      [oldUserId]
+    );
+
+    // Clean up old user's deadline/pending work notifications
+    await client.query(
+      `DELETE FROM deadline_notifications WHERE recipient_id = $1`,
+      [oldUserId]
+    );
+    await client.query(
+      `DELETE FROM weekly_pending_work_notifications WHERE recipient_id = $1`,
+      [oldUserId]
+    );
+
+    // 5️⃣ Delete old user
     await client.query(
       `
       DELETE FROM users

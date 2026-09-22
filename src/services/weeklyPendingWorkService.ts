@@ -1,4 +1,4 @@
-import cron from "node-cron";
+import cron, { ScheduledTask } from "node-cron";
 import { pool } from "../db";
 import { sendEmail } from "./emailService";
 import { createNotification } from "./notificationService";
@@ -11,6 +11,17 @@ import {
   employeeWeeklyPendingWorkEmailTemplate,
   managerWeeklyPendingWorkEmailTemplate,
 } from "../templates/operationalEmails";
+
+import { withAdvisoryLock, ADVISORY_LOCK_IDS } from "../utils/schedulerLock";
+
+// ──────────────────────────────────────────────
+// PROCESS SINGLETON REGISTRATION GUARD
+// ──────────────────────────────────────────────
+let isWeeklySchedulerInitialized = false;
+
+export function _resetWeeklySchedulerStateForTesting(): void {
+  isWeeklySchedulerInitialized = false;
+}
 
 export interface EmployeeWeeklyPendingSummary {
   employeeId: string;
@@ -65,6 +76,27 @@ export async function recordWeeklyPendingWorkNotification(
     return result.rowCount !== null && result.rowCount > 0;
   } catch (err) {
     console.error("Failed to record weekly pending work notification:", err);
+    return false;
+  }
+}
+
+/**
+ * Deletes a recorded weekly pending work notification. Used when email delivery fails
+ * so that subsequent scheduler executions can legitimately retry sending.
+ */
+export async function deleteWeeklyPendingWorkNotification(
+  weekStart: string,
+  recipientId: string
+): Promise<boolean> {
+  try {
+    const result = await pool.query(
+      `DELETE FROM weekly_pending_work_notifications
+       WHERE week_start = $1::date AND recipient_id = $2`,
+      [weekStart, recipientId]
+    );
+    return result.rowCount !== null && result.rowCount > 0;
+  } catch (err) {
+    console.error("Failed to delete weekly pending work notification record:", err);
     return false;
   }
 }
@@ -320,39 +352,46 @@ export async function sendEmployeeWeeklyPendingWorkSummary(
     await recordWeeklyPendingWorkNotification(weekStart, employee.id, "Employee");
   }
 
-  const summary = await getWeeklyPendingItemsForEmployee(employee.id, referenceDate);
+  try {
+    const summary = await getWeeklyPendingItemsForEmployee(employee.id, referenceDate);
 
-  const emailParams: EmployeeWeeklyPendingEmailParams = {
-    employeeName: employee.fullName,
-    weekStartDate: weekStart,
-    totalPending: summary.totalPending,
-    overdueCount: summary.overdueItems.length,
-    dueTodayCount: summary.dueTodayItems.length,
-    dueTomorrowCount: summary.dueTomorrowItems.length,
-    upcomingCount: summary.upcomingItems.length,
-    overdueItems: summary.overdueItems,
-    dueTodayItems: summary.dueTodayItems,
-    dueTomorrowItems: summary.dueTomorrowItems,
-    upcomingItems: summary.upcomingItems,
-  };
+    const emailParams: EmployeeWeeklyPendingEmailParams = {
+      employeeName: employee.fullName,
+      weekStartDate: weekStart,
+      totalPending: summary.totalPending,
+      overdueCount: summary.overdueItems.length,
+      dueTodayCount: summary.dueTodayItems.length,
+      dueTomorrowCount: summary.dueTomorrowItems.length,
+      upcomingCount: summary.upcomingItems.length,
+      overdueItems: summary.overdueItems,
+      dueTodayItems: summary.dueTodayItems,
+      dueTomorrowItems: summary.dueTomorrowItems,
+      upcomingItems: summary.upcomingItems,
+    };
 
-  const html = employeeWeeklyPendingWorkEmailTemplate(emailParams);
-  const subject = `[Complify] Weekly Pending-Work Summary - ${summary.totalPending} Pending Item(s)`;
+    const html = employeeWeeklyPendingWorkEmailTemplate(emailParams);
+    const subject = `[Complify] Weekly Pending-Work Summary - ${summary.totalPending} Pending Item(s)`;
 
-  await sendEmail(employee.email, subject, html);
+    await sendEmail(employee.email, subject, html, { throwOnError: true });
 
-  // In-app notification
-  await createNotification({
-    id: `N-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    userId: employee.id,
-    notificationType: "Weekly Pending Summary",
-    title: "Weekly Pending Work Summary",
-    message: `You have ${summary.totalPending} pending item(s) (${summary.overdueItems.length} overdue, ${summary.dueTodayItems.length} due today, ${summary.dueTomorrowItems.length} due tomorrow).`,
-    status: "Sent",
-    readDate: null,
-  });
+    // In-app notification
+    await createNotification({
+      id: `N-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      userId: employee.id,
+      notificationType: "Weekly Pending Summary",
+      title: "Weekly Pending Work Summary",
+      message: `You have ${summary.totalPending} pending item(s) (${summary.overdueItems.length} overdue, ${summary.dueTodayItems.length} due today, ${summary.dueTomorrowItems.length} due tomorrow).`,
+      status: "Sent",
+      readDate: null,
+    });
 
-  return true;
+    return true;
+  } catch (err) {
+    if (!force) {
+      await deleteWeeklyPendingWorkNotification(weekStart, employee.id);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -374,40 +413,47 @@ export async function sendManagerWeeklyPendingWorkSummary(
     await recordWeeklyPendingWorkNotification(weekStart, manager.id, "Manager");
   }
 
-  const summary = await getWeeklyPendingItemsForManager(manager.id, referenceDate);
+  try {
+    const summary = await getWeeklyPendingItemsForManager(manager.id, referenceDate);
 
-  const emailParams: ManagerWeeklyPendingEmailParams = {
-    managerName: manager.fullName,
-    weekStartDate: weekStart,
-    totalPending: summary.totalPending,
-    overdueCount: summary.overdueItems.length,
-    dueTodayCount: summary.dueTodayItems.length,
-    dueTomorrowCount: summary.dueTomorrowItems.length,
-    upcomingCount: summary.upcomingItems.length,
-    overdueItems: summary.overdueItems,
-    dueTodayItems: summary.dueTodayItems,
-    dueTomorrowItems: summary.dueTomorrowItems,
-    upcomingItems: summary.upcomingItems,
-    teamStats: summary.teamStats,
-  };
+    const emailParams: ManagerWeeklyPendingEmailParams = {
+      managerName: manager.fullName,
+      weekStartDate: weekStart,
+      totalPending: summary.totalPending,
+      overdueCount: summary.overdueItems.length,
+      dueTodayCount: summary.dueTodayItems.length,
+      dueTomorrowCount: summary.dueTomorrowItems.length,
+      upcomingCount: summary.upcomingItems.length,
+      overdueItems: summary.overdueItems,
+      dueTodayItems: summary.dueTodayItems,
+      dueTomorrowItems: summary.dueTomorrowItems,
+      upcomingItems: summary.upcomingItems,
+      teamStats: summary.teamStats,
+    };
 
-  const html = managerWeeklyPendingWorkEmailTemplate(emailParams);
-  const subject = `[Complify] Manager Weekly Team Pending-Work Summary - ${summary.totalPending} Item(s)`;
+    const html = managerWeeklyPendingWorkEmailTemplate(emailParams);
+    const subject = `[Complify] Manager Weekly Team Pending-Work Summary - ${summary.totalPending} Item(s)`;
 
-  await sendEmail(manager.email, subject, html);
+    await sendEmail(manager.email, subject, html, { throwOnError: true });
 
-  // In-app notification
-  await createNotification({
-    id: `N-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    userId: manager.id,
-    notificationType: "Weekly Pending Summary",
-    title: "Weekly Team Pending-Work Summary",
-    message: `Your team has ${summary.totalPending} pending item(s) (${summary.overdueItems.length} overdue, ${summary.dueTodayItems.length} due today, ${summary.dueTomorrowItems.length} due tomorrow).`,
-    status: "Sent",
-    readDate: null,
-  });
+    // In-app notification
+    await createNotification({
+      id: `N-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      userId: manager.id,
+      notificationType: "Weekly Pending Summary",
+      title: "Weekly Team Pending-Work Summary",
+      message: `Your team has ${summary.totalPending} pending item(s) (${summary.overdueItems.length} overdue, ${summary.dueTodayItems.length} due today, ${summary.dueTomorrowItems.length} due tomorrow).`,
+      status: "Sent",
+      readDate: null,
+    });
 
-  return true;
+    return true;
+  } catch (err) {
+    if (!force) {
+      await deleteWeeklyPendingWorkNotification(weekStart, manager.id);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -462,26 +508,65 @@ export async function sendWeeklyPendingWorkSummary(
   return { employeesNotified, managersNotified, errors };
 }
 
+let weeklyCronTask: ScheduledTask | null = null;
+
+export function stopWeeklyPendingWorkScheduler(): void {
+  if (weeklyCronTask) {
+    try {
+      weeklyCronTask.stop();
+    } catch (_) {}
+    weeklyCronTask = null;
+  }
+  isWeeklySchedulerInitialized = false;
+}
+
 /**
  * Initializes the weekly Monday cron scheduler for pending work summaries.
  */
-export function startWeeklyPendingWorkScheduler() {
+export function startWeeklyPendingWorkScheduler(runCatchup: boolean = true): boolean {
+  if (isWeeklySchedulerInitialized) {
+    console.log("⚠️ Weekly pending work scheduler already initialized in this process. Skipping duplicate registration.");
+    return false;
+  }
+  isWeeklySchedulerInitialized = true;
+
   const hour = process.env.WEEKLY_PENDING_WORK_HOUR
     ? Number(process.env.WEEKLY_PENDING_WORK_HOUR)
     : 8;
   const cronExpr = `0 ${hour} * * 1`; // Every Monday at 8:00 AM (or configured hour)
 
-  cron.schedule(cronExpr, async () => {
+  // Monday boot catch-up: if server starts/restarts on Monday at or past scheduled hour, run catch-up
+  const now = new Date();
+  if (runCatchup && now.getDay() === 1 && now.getHours() >= hour) {
+    console.log(`⏰ Running Monday boot catch-up for Weekly Pending-Work Summary...`);
+    withAdvisoryLock(
+      ADVISORY_LOCK_IDS.WEEKLY_PENDING_WORK,
+      "WeeklyPendingWorkBootCatchup",
+      () => sendWeeklyPendingWorkSummary()
+    ).catch((err) => {
+      console.error("❌ Weekly Pending-Work boot catch-up error:", err);
+    });
+  }
+
+  weeklyCronTask = cron.schedule(cronExpr, async () => {
     console.log(`⏰ Running Weekly Pending-Work Summary job (Monday ${hour}:00 AM)...`);
     try {
-      const stats = await sendWeeklyPendingWorkSummary();
-      console.log(
-        `  ✅ Weekly Pending-Work job complete: ${stats.employeesNotified} employee(s), ${stats.managersNotified} manager(s) notified. Errors: ${stats.errors.length}`
+      const res = await withAdvisoryLock(
+        ADVISORY_LOCK_IDS.WEEKLY_PENDING_WORK,
+        "WeeklyPendingWork",
+        () => sendWeeklyPendingWorkSummary()
       );
+      if (res.executed && res.result) {
+        const stats = res.result;
+        console.log(
+          `  ✅ Weekly Pending-Work job complete: ${stats.employeesNotified} employee(s), ${stats.managersNotified} manager(s) notified. Errors: ${stats.errors.length}`
+        );
+      }
     } catch (err) {
       console.error("❌ Weekly Pending-Work cron error:", err);
     }
   });
 
-  console.log(`  ✅ Weekly pending-work summary scheduler started (Monday ${hour}:00 AM)`);
+  console.log(`  ✅ Weekly pending-work summary scheduler started (Monday ${hour}:00 AM & Monday boot catch-up)`);
+  return true;
 }

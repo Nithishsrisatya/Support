@@ -1,5 +1,5 @@
 import { pool } from "../db";
-import { randomUUID } from "crypto";
+import crypto from "crypto";
 
 export async function getAllAuditLogs() {
   const result = await pool.query(`
@@ -41,6 +41,10 @@ export async function getAuditLogById(id: string) {
 }
 
 export async function createAuditLog(log: any) {
+  const logId = log.id && log.id.length <= 20
+    ? log.id
+    : `LOG-${Date.now().toString().slice(-8)}-${crypto.randomInt(1000, 9999)}`;
+
   const result = await pool.query(
     `
     INSERT INTO audit_logs (
@@ -59,7 +63,7 @@ export async function createAuditLog(log: any) {
     RETURNING *
     `,
     [
-      log.id,
+      logId,
       log.userId,
       log.userFullName,
       log.action,
@@ -72,14 +76,8 @@ export async function createAuditLog(log: any) {
   return result.rows[0];
 }
 
-export async function deleteAuditLog(id: string) {
-  await pool.query(
-    `
-    DELETE FROM audit_logs
-    WHERE id=$1
-    `,
-    [id]
-  );
+export async function deleteAuditLog(id: string): Promise<void> {
+  throw new Error("Audit logs are immutable compliance records and cannot be deleted.");
 }
 
 // ============================================================
@@ -182,7 +180,7 @@ export async function logAuditEvent(
   entityId: string,
   description: string
 ) {
-  const id = `LOG-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+  const id = `LOG-${Date.now().toString().slice(-8)}-${crypto.randomInt(1000, 9999)}`;
   const result = await pool.query(
     `
     INSERT INTO audit_logs (id, user_id, user_full_name, action, entity_type, entity_id, timestamp, description)

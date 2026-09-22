@@ -11,44 +11,75 @@ import {
 import { authenticateToken } from "../middleware/authMiddleware";
 import { authorizeRoles } from "../middleware/roleMiddleware";
 import bcrypt from "bcrypt";
-// --- Import Email Services (Phase 8) ---
 import { sendEmail } from "../services/emailService";
 import { clientWelcomeTemplate } from "../templates/operationalEmails";
 import { logAuditEvent } from "../services/auditLogService";
+import { generateTemporaryPassword, isPredictablePassword } from "../utils/credentialUtils";
+import {
+  isPlainObject,
+  isNonEmptyString,
+  isString,
+  isEmail,
+  isEnum,
+  isValidId,
+  filterAllowedFields,
+} from "../utils/validator";
+import { handleDatabaseError } from "../utils/dbErrorHandler";
 
 const router = Router();
 
 // GET /api/clients
-router.get("/",authenticateToken,
-  authorizeRoles(["Administrator", "Manager"]), async (req, res) => {
-  try {
-    const clients = await getAllClients();
-    res.json(clients);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      message: "Failed to fetch clients.",
-    });
+router.get(
+  "/",
+  authenticateToken,
+  authorizeRoles(["Administrator", "Manager"]),
+  async (req, res) => {
+    try {
+      const clients = await getAllClients();
+      res.json(clients);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        message: "Failed to fetch clients.",
+      });
+    }
   }
-});
+);
 
-// ============================================
-// CHANGE PASSWORD
-// Logged-in Client
-// IMPORTANT: Must be before "/:id"
-// ============================================
+// PUT /api/clients/change-password
 router.put(
   "/change-password",
   authenticateToken,
   async (req, res) => {
     try {
+      if (!isPlainObject(req.body)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid request body.",
+        });
+      }
+
       const clientId = (req as any).user.id;
       const { currentPassword, newPassword } = req.body;
 
-      if (!currentPassword || !newPassword) {
+      if (!isNonEmptyString(currentPassword) || !isNonEmptyString(newPassword)) {
         return res.status(400).json({
           success: false,
           message: "Current password and new password are required.",
+        });
+      }
+
+      if (currentPassword.length > 128) {
+        return res.status(400).json({
+          success: false,
+          message: "Current password exceeds maximum allowed length.",
+        });
+      }
+
+      if (newPassword.length < 8 || newPassword.length > 128) {
+        return res.status(400).json({
+          success: false,
+          message: "New password must be at least 8 characters long (between 8 and 128 characters).",
         });
       }
 
@@ -58,7 +89,6 @@ router.put(
         newPassword
       );
 
-      // Audit log: Password Change (Client)
       try {
         const clientInfo = (req as any).user;
         await logAuditEvent(
@@ -88,8 +118,7 @@ router.put(
   }
 );
 
-// GET /api/clients/me - Logged in client profile
-// ⚠️ MUST be before GET /:id to avoid Express matching "me" as :id
+// GET /api/clients/me
 router.get(
   "/me",
   authenticateToken,
@@ -111,16 +140,64 @@ router.get(
   }
 );
 
-// PUT /api/clients/me - Logged in client profile update (Self-service)
-// ⚠️ MUST be before PUT /:id to avoid Express matching "me" as :id
+// PUT /api/clients/me
 router.put(
   "/me",
   authenticateToken,
   authorizeRoles([], true),
   async (req, res) => {
     try {
+      if (!isPlainObject(req.body)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid request body.",
+        });
+      }
+
       const clientId = (req as any).user.id;
       const { companyName, companyDomain, contactPerson, email, phoneNumber, city } = req.body;
+
+      if (companyName !== undefined && (!isString(companyName, 255) || !companyName.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: "Company name cannot be empty.",
+        });
+      }
+
+      if (contactPerson !== undefined && (!isString(contactPerson, 255) || !contactPerson.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: "Contact person cannot be empty.",
+        });
+      }
+
+      if (email !== undefined && !isEmail(email)) {
+        return res.status(400).json({
+          success: false,
+          message: "Please enter a valid email address.",
+        });
+      }
+
+      if (phoneNumber !== undefined && !isString(phoneNumber, 50)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid phone number format.",
+        });
+      }
+
+      if (city !== undefined && !isString(city, 100)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid city format.",
+        });
+      }
+
+      if (companyDomain !== undefined && !isString(companyDomain, 255)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid company domain format.",
+        });
+      }
 
       const client = await updateClientProfile(clientId, {
         companyName,
@@ -131,7 +208,6 @@ router.put(
         city,
       });
 
-      // Audit log: Client Profile Update
       try {
         const user = (req as any).user;
         await logAuditEvent(
@@ -166,30 +242,38 @@ router.put(
 );
 
 // GET /api/clients/:id
-router.get("/:id", authenticateToken,
-  authorizeRoles(["Administrator", "Manager"], true), async (req, res) => {
-  try {
-    const user = (req as any).user;
-    if ((user?.userType === "Client" || user?.role === "Client") && user?.id !== req.params.id) {
-      return res.status(403).json({ success: false, message: "Forbidden" });
-    }
+router.get(
+  "/:id",
+  authenticateToken,
+  authorizeRoles(["Administrator", "Manager"], true),
+  async (req, res) => {
+    try {
+      if (!isValidId(req.params.id)) {
+        return res.status(400).json({ success: false, message: "Invalid client ID format." });
+      }
 
-    const client = await getClientById(req.params.id);
+      const user = (req as any).user;
+      if ((user?.userType === "Client" || user?.role === "Client") && user?.id !== req.params.id) {
+        return res.status(403).json({ success: false, message: "Forbidden" });
+      }
 
-    if (!client) {
-      return res.status(404).json({
-        message: "Client not found.",
+      const client = await getClientById(req.params.id);
+
+      if (!client) {
+        return res.status(404).json({
+          message: "Client not found.",
+        });
+      }
+
+      res.json(client);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        message: "Failed to fetch client.",
       });
     }
-
-    res.json(client);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      message: "Failed to fetch client.",
-    });
   }
-});
+);
 
 // POST /api/clients
 router.post(
@@ -198,28 +282,120 @@ router.post(
   authorizeRoles(["Administrator"]),
   async (req, res) => {
     try {
-      // Generate temporary password
-      const tempPassword = req.body.password || "TempAuth123!";
+      if (!isPlainObject(req.body)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid request body.",
+        });
+      }
 
-      // Hash password before saving
+      const allowed = filterAllowedFields<any>(req.body, [
+        "id",
+        "companyName",
+        "companyDomain",
+        "contactPerson",
+        "email",
+        "phoneNumber",
+        "city",
+        "status",
+        "password",
+      ]);
+
+      const { companyName, contactPerson, email, phoneNumber, companyDomain, city, status, id, password } = allowed;
+
+      if (id !== undefined && !isValidId(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid client ID format.",
+        });
+      }
+
+      if (!isNonEmptyString(companyName, 255)) {
+        return res.status(400).json({
+          success: false,
+          message: "Company name is required (max 255 characters).",
+        });
+      }
+
+      if (!isNonEmptyString(contactPerson, 255)) {
+        return res.status(400).json({
+          success: false,
+          message: "Contact person is required (max 255 characters).",
+        });
+      }
+
+      if (!isEmail(email)) {
+        return res.status(400).json({
+          success: false,
+          message: "A valid email address is required.",
+        });
+      }
+
+      if (phoneNumber !== undefined && !isString(phoneNumber, 50)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid phone number format.",
+        });
+      }
+
+      if (
+        status !== undefined &&
+        !isEnum(status, ["Active", "Inactive", "Disabled", "Suspended", "Pending Activation"] as const)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid client status.",
+        });
+      }
+
+      if (companyDomain !== undefined && !isString(companyDomain, 255)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid company domain format.",
+        });
+      }
+
+      if (city !== undefined && !isString(city, 100)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid city format.",
+        });
+      }
+
+      if (password !== undefined && (!isString(password, 128) || password.length < 8)) {
+        return res.status(400).json({
+          success: false,
+          message: "Password must be between 8 and 128 characters long.",
+        });
+      }
+
+      const tempPassword = (password && !isPredictablePassword(password, contactPerson))
+        ? password
+        : generateTemporaryPassword();
+
       const passwordHash = await bcrypt.hash(tempPassword, 10);
 
-      // Save client with hashed password
+      if (!allowed.id) {
+        allowed.id = `C-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      }
+      if (!allowed.status) {
+        allowed.status = "Active";
+      }
+
       const client = await createClient({
-        ...req.body,
+        ...allowed,
         passwordHash,
       });
 
-      // Send welcome email
       try {
         const html = clientWelcomeTemplate(
-          req.body.contactPerson,
-          req.body.companyName,
+          contactPerson,
+          companyName,
           tempPassword
         );
 
         await sendEmail(
-          req.body.email,
+          email,
           "Welcome to Complify Global Support - Your Portal Credentials",
           html
         );
@@ -227,7 +403,6 @@ router.post(
         console.error("Failed to send client welcome email:", err);
       }
 
-      // Audit log: Client Creation
       try {
         const admin = (req as any).user;
         await logAuditEvent(
@@ -247,92 +422,160 @@ router.post(
         client,
       });
     } catch (error) {
-      console.error(error);
-
-      res.status(500).json({
-        success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Failed to create client.",
-      });
+      return handleDatabaseError(error, res, "Failed to create client.");
     }
   }
 );
 
 // PUT /api/clients/:id
-router.put("/:id",authenticateToken,
-  authorizeRoles(["Administrator"]), async (req, res) => {
-  try {
-    const client = await updateClient(req.params.id, req.body);
-
-    // Audit log: Client Update
+router.put(
+  "/:id",
+  authenticateToken,
+  authorizeRoles(["Administrator"]),
+  async (req, res) => {
     try {
-      const admin = (req as any).user;
-      await logAuditEvent(
-        admin?.id || "ADMIN",
-        admin?.fullName || "Administrator",
-        "Account Status Change",
-        "Client",
-        req.params.id,
-        `Administrator ${admin?.fullName || "System"} updated client ${client.companyName || req.params.id}.`
-      );
-    } catch (logErr) {
-      console.error("Failed to log audit event:", logErr);
+      if (!isValidId(req.params.id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid client ID format.",
+        });
+      }
+
+      if (!isPlainObject(req.body)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid request body.",
+        });
+      }
+
+      const allowed = filterAllowedFields<any>(req.body, [
+        "companyName",
+        "contactPerson",
+        "email",
+        "phoneNumber",
+        "companyDomain",
+        "city",
+        "status",
+      ]);
+
+      const { companyName, contactPerson, email, phoneNumber, companyDomain, city, status } = allowed;
+
+      if (companyName !== undefined && (!isString(companyName, 255) || !companyName.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: "Company name cannot be empty.",
+        });
+      }
+
+      if (contactPerson !== undefined && (!isString(contactPerson, 255) || !contactPerson.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: "Contact person cannot be empty.",
+        });
+      }
+
+      if (email !== undefined && !isEmail(email)) {
+        return res.status(400).json({
+          success: false,
+          message: "Please enter a valid email address.",
+        });
+      }
+
+      if (phoneNumber !== undefined && !isString(phoneNumber, 50)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid phone number format.",
+        });
+      }
+
+      if (
+        status !== undefined &&
+        !isEnum(status, ["Active", "Inactive", "Disabled", "Suspended", "Pending Activation"] as const)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid client status.",
+        });
+      }
+
+      if (companyDomain !== undefined && !isString(companyDomain, 255)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid company domain format.",
+        });
+      }
+
+      if (city !== undefined && !isString(city, 100)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid city format.",
+        });
+      }
+
+      const client = await updateClient(req.params.id, allowed);
+
+      try {
+        const admin = (req as any).user;
+        await logAuditEvent(
+          admin?.id || "ADMIN",
+          admin?.fullName || "Administrator",
+          "Account Status Change",
+          "Client",
+          req.params.id,
+          `Administrator ${admin?.fullName || "System"} updated client ${client.companyName || req.params.id}.`
+        );
+      } catch (logErr) {
+        console.error("Failed to log audit event:", logErr);
+      }
+
+      res.json({
+        success: true,
+        client,
+      });
+    } catch (error) {
+      return handleDatabaseError(error, res, "Failed to update client.");
     }
-
-    res.json({
-      success: true,
-      client,
-    });
-  } catch (error) {
-    console.error(error);
-
-    res.status(500).json({
-      success: false,
-      message:
-        error instanceof Error
-          ? error.message
-          : "Failed to update client.",
-    });
   }
-});
+);
 
 // DELETE /api/clients/:id
-router.delete("/:id",authenticateToken,
-  authorizeRoles(["Administrator"]), async (req, res) => {
-  try {
-    await deleteClient(req.params.id);
-
-    // Audit log: Client Deletion
+router.delete(
+  "/:id",
+  authenticateToken,
+  authorizeRoles(["Administrator"]),
+  async (req, res) => {
     try {
+      if (!isValidId(req.params.id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid client ID format.",
+        });
+      }
+
       const admin = (req as any).user;
-      await logAuditEvent(
-        admin?.id || "ADMIN",
-        admin?.fullName || "Administrator",
-        "Client Deletion",
-        "Client",
-        req.params.id,
-        `Administrator ${admin?.fullName || "System"} deleted client ${req.params.id}.`
-      );
-    } catch (logErr) {
-      console.error("Failed to log audit event:", logErr);
+      await deleteClient(req.params.id);
+
+      try {
+        await logAuditEvent(
+          admin?.id || "ADMIN",
+          admin?.fullName || "Administrator",
+          "Client Deletion",
+          "Client",
+          req.params.id,
+          `Administrator ${admin?.fullName || "System"} deleted client ${req.params.id}.`
+        );
+      } catch (logErr) {
+        console.error("Failed to log audit event:", logErr);
+      }
+
+      res.json({
+        success: true,
+        message: "Client deleted successfully.",
+      });
+    } catch (error) {
+      return handleDatabaseError(error, res, "Failed to delete client.");
     }
-
-    res.json({
-      success: true,
-      message: "Client deleted successfully.",
-    });
-  } catch (error) {
-    console.error(error);
-
-    res.status(500).json({
-      success: false,
-      message: error instanceof Error
-        ? error.message
-        : "Failed to delete client.",
-    });
   }
-});
+);
 
 export default router;

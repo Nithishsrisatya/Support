@@ -376,6 +376,13 @@ export async function migrate(customPool = pool, closePoolAtEnd = true) {
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_created_date ON tasks(created_date)`);
+
+      // Audit Logs
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id)`);
 
       // Ticket child tables
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_ticket_history_ticket_id ON ticket_history(ticket_id)`);

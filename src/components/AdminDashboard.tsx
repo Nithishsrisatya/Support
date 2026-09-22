@@ -1539,7 +1539,7 @@ link.setAttribute("download", `${reportName}_Compliance_Export_2026.csv`);
             {paginatedTasks.map((task) => {
                 const assigneeUser = systemUsers.find((u) => u.id === task.assignedTo);
 
-                // Determine overdue calculation dynamically relative to mock environment time "2026-06-16"
+                // Server-computed overdue status
                 const isTaskOverdue = task.isOverdue;
 
                 return (

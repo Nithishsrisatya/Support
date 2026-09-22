@@ -8,6 +8,8 @@ export async function getTicketReport(filters: {
   status?: string;
   priority?: string;
   assignedTo?: string;
+  assignedToIn?: string[];
+  includeUnassigned?: boolean;
   clientId?: string;
   fromDate?: string;
   toDate?: string;
@@ -26,7 +28,25 @@ export async function getTicketReport(filters: {
     params.push(filters.priority);
     paramIndex++;
   }
-  if (filters.assignedTo) {
+  if (filters.assignedToIn && filters.assignedToIn.length > 0) {
+    if (filters.assignedTo) {
+      if (filters.assignedToIn.includes(filters.assignedTo)) {
+        conditions.push(`t.assigned_to = $${paramIndex}`);
+        params.push(filters.assignedTo);
+        paramIndex++;
+      } else {
+        conditions.push(`1=0`);
+      }
+    } else {
+      if (filters.includeUnassigned) {
+        conditions.push(`(t.assigned_to = ANY($${paramIndex}::varchar[]) OR t.assigned_to IS NULL)`);
+      } else {
+        conditions.push(`t.assigned_to = ANY($${paramIndex}::varchar[])`);
+      }
+      params.push(filters.assignedToIn);
+      paramIndex++;
+    }
+  } else if (filters.assignedTo) {
     conditions.push(`t.assigned_to = $${paramIndex}`);
     params.push(filters.assignedTo);
     paramIndex++;
@@ -53,7 +73,7 @@ export async function getTicketReport(filters: {
   const tickets = await pool.query(`
     SELECT
       t.id, t.subject, t.description, t.category, t.priority, t.status,
-t.assigned_to AS "assignedTo", t.client_id AS "clientId",
+      t.assigned_to AS "assignedTo", t.client_id AS "clientId",
       t.created_date AS "createdDate", t.updated_date AS "updatedDate",
       t.due_date AS "dueDate", t.completed_at AS "completedAt",
       CASE WHEN t.due_date IS NOT NULL AND t.status NOT IN ('Resolved', 'Closed') AND t.due_date < NOW() THEN true ELSE false END AS "isOverdue",
@@ -93,7 +113,7 @@ t.assigned_to AS "assignedTo", t.client_id AS "clientId",
       ROUND(MAX(EXTRACT(EPOCH FROM (t.resolution_date::timestamp - t.created_date::timestamp)) / 3600)::numeric, 2) AS "maxResolutionHours"
     FROM tickets t
     WHERE t.resolution_date IS NOT NULL
-    ${filters.fromDate || filters.toDate ? "AND" : ""} ${conditions.length > 0 ? conditions.join(" AND ").replace(/t\./g, "t.") : ""}
+    ${conditions.length > 0 ? "AND " + conditions.join(" AND ") : ""}
   `, params);
 
   return {
@@ -111,6 +131,9 @@ export async function getTaskReport(filters: {
   status?: string;
   priority?: string;
   assignedTo?: string;
+  assignedToIn?: string[];
+  assignedByMe?: string;
+  includeUnassigned?: boolean;
   assignedBy?: string;
   fromDate?: string;
   toDate?: string;
@@ -129,12 +152,38 @@ export async function getTaskReport(filters: {
     params.push(filters.priority);
     paramIndex++;
   }
-  if (filters.assignedTo) {
+  if (filters.assignedToIn && filters.assignedToIn.length > 0) {
+    if (filters.assignedTo) {
+      if (filters.assignedToIn.includes(filters.assignedTo)) {
+        conditions.push(`t.assigned_to = $${paramIndex}`);
+        params.push(filters.assignedTo);
+        paramIndex++;
+      } else {
+        conditions.push(`1=0`);
+      }
+    } else if (filters.assignedByMe) {
+      if (filters.includeUnassigned) {
+        conditions.push(`(t.assigned_to = ANY($${paramIndex}::varchar[]) OR t.assigned_by = $${paramIndex + 1} OR t.assigned_to IS NULL)`);
+      } else {
+        conditions.push(`(t.assigned_to = ANY($${paramIndex}::varchar[]) OR t.assigned_by = $${paramIndex + 1})`);
+      }
+      params.push(filters.assignedToIn, filters.assignedByMe);
+      paramIndex += 2;
+    } else {
+      if (filters.includeUnassigned) {
+        conditions.push(`(t.assigned_to = ANY($${paramIndex}::varchar[]) OR t.assigned_to IS NULL)`);
+      } else {
+        conditions.push(`t.assigned_to = ANY($${paramIndex}::varchar[])`);
+      }
+      params.push(filters.assignedToIn);
+      paramIndex++;
+    }
+  } else if (filters.assignedTo) {
     conditions.push(`t.assigned_to = $${paramIndex}`);
     params.push(filters.assignedTo);
     paramIndex++;
   }
-  if (filters.assignedBy) {
+  if (filters.assignedBy && !filters.assignedByMe) {
     conditions.push(`t.assigned_by = $${paramIndex}`);
     params.push(filters.assignedBy);
     paramIndex++;
@@ -199,19 +248,26 @@ export async function getEmployeeProductivityReport(filters: {
   fromDate?: string;
   toDate?: string;
   department?: string;
+  managerId?: string;
 }) {
-  let conditions = "";
+  const whereClauses = ["u.role IN ('Employee', 'Manager')"];
   const params: any[] = [];
-  
+  let paramIndex = 1;
+
   if (filters.department) {
-    conditions = "WHERE u.department = $1";
+    whereClauses.push(`u.department = $${paramIndex}`);
     params.push(filters.department);
+    paramIndex++;
   }
 
-  const dateFilter = filters.fromDate && filters.toDate
-    ? `AND t.created_date >= ${filters.fromDate ? `'${filters.fromDate}'` : "'1970-01-01'"}` 
-    : "";
-  
+  if (filters.managerId) {
+    whereClauses.push(`(u.manager_id = $${paramIndex} OR u.id = $${paramIndex})`);
+    params.push(filters.managerId);
+    paramIndex++;
+  }
+
+  const whereSql = "WHERE " + whereClauses.join(" AND ");
+
   const employees = await pool.query(`
     SELECT
       u.id, u.full_name AS "fullName", u.email, u.department, u.role, u.status,
@@ -224,8 +280,7 @@ export async function getEmployeeProductivityReport(filters: {
       (SELECT COUNT(*) FROM tasks tk WHERE tk.assigned_to = u.id AND (tk.status = 'Overdue' OR (tk.status NOT IN ('Completed', 'Escalated') AND tk.due_date < NOW()))) AS "tasksOverdue",
       (SELECT ROUND(AVG(t.satisfaction_rating)::numeric, 2) FROM tickets t WHERE t.assigned_to = u.id AND t.satisfaction_rating IS NOT NULL) AS "avgSatisfaction"
     FROM users u
-    WHERE u.role IN ('Employee', 'Manager')
-    ${filters.department ? "AND u.department = $1" : ""}
+    ${whereSql}
     ORDER BY u.full_name
   `, params);
 

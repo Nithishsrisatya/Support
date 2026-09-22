@@ -12,18 +12,34 @@ import bcrypt from "bcrypt";
 import { authenticateToken } from "../middleware/authMiddleware";
 import { authorizeRoles } from "../middleware/roleMiddleware";
 import { logAuditEvent } from "../services/auditLogService";
+import { generateTemporaryPassword } from "../utils/credentialUtils";
+import { isPlainObject, isEmail, isNonEmptyString, isValidId } from "../utils/validator";
 
 const router = Router();
 
 // POST /api/auth/login
 router.post("/login", async (req, res) => {
   try {
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request body.",
+      });
+    }
+
     const { email, password } = req.body;
 
-    if (!email || !password) {
+    if (typeof email !== "string" || typeof password !== "string" || !email.trim() || !password) {
       return res.status(400).json({
         success: false,
         message: "Email and password are required.",
+      });
+    }
+
+    if (email.length > 255 || password.length > 128) {
+      return res.status(400).json({
+        success: false,
+        message: "Email or password exceeds maximum allowed length.",
       });
     }
 
@@ -75,9 +91,12 @@ const RESET_TOKEN_EXPIRY_MINUTES = 30; // Tokens expire in 30 minutes
 // Sends a cryptographically secure single-use password reset link email
 router.post("/forgot-password", async (req, res) => {
   try {
-    const email = (req.body?.email || "").trim().toLowerCase();
+    if (!isPlainObject(req.body) || typeof req.body.email !== "string") {
+      return res.status(400).json({ success: false, message: "Please enter a valid email address." });
+    }
+    const email = req.body.email.trim().toLowerCase();
 
-    if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
+    if (!email || !isEmail(email)) {
       return res.status(400).json({ success: false, message: "Please enter a valid email address." });
     }
 
@@ -148,8 +167,9 @@ router.post("/forgot-password", async (req, res) => {
 // Validates whether a reset token is valid and unexpired before rendering the form
 router.post("/verify-reset-token", async (req, res) => {
   try {
-    const token = (req.body?.token || req.query?.token || "").toString().trim();
-    if (!token || token.length !== 64) {
+    const rawToken = typeof req.body?.token === "string" ? req.body.token : (typeof req.query?.token === "string" ? req.query.token : "");
+    const token = rawToken.trim();
+    if (!token || token.length !== 64 || !/^[a-fA-F0-9]{64}$/.test(token)) {
       return res.status(400).json({ success: false, message: "Invalid or expired password reset link." });
     }
 
@@ -179,14 +199,17 @@ router.post("/verify-reset-token", async (req, res) => {
 // Resets password using a verified single-use cryptographic token
 router.post("/reset-password", async (req, res) => {
   try {
+    if (!isPlainObject(req.body)) {
+      return res.status(400).json({ success: false, message: "Invalid request body." });
+    }
     const { token, newPassword } = req.body;
 
-    if (!token || typeof token !== "string" || token.trim().length !== 64) {
+    if (!token || typeof token !== "string" || token.trim().length !== 64 || !/^[a-fA-F0-9]{64}$/.test(token.trim())) {
       return res.status(400).json({ success: false, message: "Invalid or expired password reset link." });
     }
 
-    if (!newPassword || typeof newPassword !== "string" || newPassword.length < 8) {
-      return res.status(400).json({ success: false, message: "Password must be at least 8 characters long." });
+    if (!newPassword || typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 128) {
+      return res.status(400).json({ success: false, message: "Password must be at least 8 characters long (max 128 characters)." });
     }
 
     const rawToken = token.trim();
@@ -291,8 +314,11 @@ router.post(
   async (req, res) => {
     try {
       const targetUserId = req.params.userId;
+      if (!isValidId(targetUserId)) {
+        return res.status(400).json({ success: false, message: "Invalid user ID format." });
+      }
       const adminName = (req as any).user?.fullName || "Administrator";
-      const tempPassword = "Temp" + Math.random().toString(36).slice(2, 8) + "123!";
+      const tempPassword = generateTemporaryPassword();
 
       const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
@@ -345,7 +371,6 @@ router.post(
       res.json({
         success: true,
         message: `Password for ${userName} has been reset. A notification email has been sent.`,
-        temporaryPassword: tempPassword,
       });
     } catch (error) {
       console.error("Admin Reset Password Error:", error);

@@ -10,7 +10,7 @@ export interface User {
   id: string; // UserID
   fullName: string;
   email: string;
-  passwordHash: string; // Stores mocked encrypted/hashed passwords
+  passwordHash?: string; // Stores mocked encrypted/hashed passwords (never returned by API)
   role: UserRole;
   department: string; // Support, Operations, Administration, etc.
   managerId: string | null; // ManagerID (Foreign Key)

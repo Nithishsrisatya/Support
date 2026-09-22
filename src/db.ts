@@ -3,6 +3,12 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+const isTest =
+  process.env.NODE_ENV === "test" ||
+  process.env.npm_lifecycle_event === "test" ||
+  process.execArgv.some((a) => a.includes("--test")) ||
+  process.argv.some((a) => a.includes("--test"));
+
 const poolConfig: PoolConfig = {
   connectionString: process.env.DATABASE_URL || undefined,
   host: process.env.DB_HOST,
@@ -11,7 +17,11 @@ const poolConfig: PoolConfig = {
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   max: process.env.DB_POOL_MAX ? Number(process.env.DB_POOL_MAX) : 20,
-  idleTimeoutMillis: process.env.DB_IDLE_TIMEOUT ? Number(process.env.DB_IDLE_TIMEOUT) : 30000,
+  idleTimeoutMillis: process.env.DB_IDLE_TIMEOUT
+    ? Number(process.env.DB_IDLE_TIMEOUT)
+    : isTest
+    ? 200
+    : 30000,
   connectionTimeoutMillis: process.env.DB_CONNECTION_TIMEOUT ? Number(process.env.DB_CONNECTION_TIMEOUT) : 5000,
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : undefined,
 };

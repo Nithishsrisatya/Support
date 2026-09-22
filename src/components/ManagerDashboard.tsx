@@ -29,7 +29,7 @@ export default function ManagerDashboard({
   const [activeSubTab, setActiveSubTab] = useState<"dashboard" | "calendar" | "team" | "escalations" | "department">("dashboard");
   const [staffFilter, setStaffFilter] = useState("all");
 
-  // Teammates supervised by this manager (Robert Chen supervises David Kim)
+  // Teammates supervised by this manager
   const teammates = systemUsers.filter((u) => u.managerId === currentManager.id);
   const teammateIds = teammates.map((t) => t.id);
 
@@ -58,7 +58,18 @@ export default function ManagerDashboard({
     ? Math.round((resolvedTickets.length / supervisedTickets.length) * 100)
     : 100;
 
-  // Render a detailed productivity index score for David Kim
+  // Real client satisfaction rating based on supervised tickets
+  const ratedTickets = supervisedTickets.filter(
+    (t) => typeof t.satisfactionRating === "number" && t.satisfactionRating > 0
+  );
+  const avgSatisfaction = ratedTickets.length > 0
+    ? (ratedTickets.reduce((sum, t) => sum + (t.satisfactionRating || 0), 0) / ratedTickets.length).toFixed(1)
+    : null;
+  const satisfactionPercent = avgSatisfaction
+    ? Math.round((parseFloat(avgSatisfaction) / 5) * 100)
+    : 0;
+
+  // Render a detailed productivity index score for supervised team members
   // Productivity Level is based on (Tasks Completed + Tickets Resolved) - (Overdue Escalations * 1.5)
   const computeProductivityScore = (userId: string) => {
     const doneT = tasks.filter((t) => t.assignedTo === userId && t.status === "Completed").length;
@@ -355,7 +366,7 @@ export default function ManagerDashboard({
                         <span className="inline-block rounded bg-red-600 px-2 py-0.5 text-[9px] font-bold text-white font-mono uppercase animate-pulse">
                           Escalated status
                         </span>
-                        <div className="text-[9px] text-zinc-400 font-mono">Logged: 2026-06-16</div>
+                        <div className="text-[9px] text-zinc-400 font-mono">Created: {formatDate(t.createdDate)}</div>
                       </div>
                     </div>
                   );
@@ -433,20 +444,24 @@ export default function ManagerDashboard({
                 <div className="p-3.5 rounded-xl border border-zinc-150 space-y-1 bg-white">
                   <div className="flex items-center justify-between text-[11px] font-medium text-zinc-650">
                     <span>Client Satisfaction Support Rating</span>
-                    <span className="font-bold text-zinc-900">4.8 / 5.0</span>
+                    <span className="font-bold text-zinc-900">
+                      {avgSatisfaction ? `${avgSatisfaction} / 5.0` : "No ratings yet"}
+                    </span>
                   </div>
                   <div className="h-2 w-full rounded-full bg-zinc-100">
-                    <div className="h-full rounded-full bg-amber-500" style={{ width: `96%` }}></div>
+                    <div className="h-full rounded-full bg-amber-500" style={{ width: `${satisfactionPercent}%` }}></div>
                   </div>
                 </div>
 
                 <div className="p-3.5 rounded-xl border border-zinc-150 bg-sky-50/20 text-sky-850 p-4 space-y-2">
                   <p className="font-semibold text-xs flex items-center gap-1.5">
                     <Award className="h-4 w-4 text-amber-500" />
-                    <span>Compliance Recognition Record</span>
+                    <span>Department Operational Summary</span>
                   </p>
                   <p className="text-[11px] text-zinc-600 leading-normal">
-                    David Kim achieved the June SLA Service Target with 100% gateway deployment uptime on June 15, logging compliance certificate renew metrics.
+                    {teammates.length > 0
+                      ? `${teammates.length} supervised team member(s) managing ${supervisedTasks.length} active task(s) and ${supervisedTickets.length} ticket(s) with ${onTimeTaskRate}% on-time completion.`
+                      : "No subordinates assigned to this supervisory department yet."}
                   </p>
                 </div>
 

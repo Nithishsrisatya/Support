@@ -1,3 +1,5 @@
+import { escapeHtml } from "../utils/htmlSanitizer";
+
 export function welcomeEmail(
   name: string,
   email: string,
@@ -6,19 +8,19 @@ export function welcomeEmail(
   return `
     <h2>Welcome to Complify Support</h2>
 
-    <p>Hello <b>${name}</b>,</p>
+    <p>Hello <b>${escapeHtml(name)}</b>,</p>
 
     <p>Your account has been created successfully.</p>
 
     <table>
       <tr>
         <td><b>Email</b></td>
-        <td>${email}</td>
+        <td>${escapeHtml(email)}</td>
       </tr>
 
       <tr>
         <td><b>Password</b></td>
-        <td>${password}</td>
+        <td>${escapeHtml(password)}</td>
       </tr>
     </table>
 

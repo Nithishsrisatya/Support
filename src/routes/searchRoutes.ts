@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { globalSearch } from "../services/searchService";
 import { authenticateToken } from "../middleware/authMiddleware";
+import { sanitizeSearchQuery } from "../utils/validator";
 
 const router = Router();
 
@@ -9,8 +10,8 @@ const router = Router();
 // ============================================================
 router.get("/", authenticateToken, async (req, res) => {
   try {
-    const q = (req.query.q as string) || "";
-    if (!q.trim()) {
+    const q = sanitizeSearchQuery(req.query.q, 200);
+    if (!q) {
       return res.json({
         tickets: [],
         tasks: [],
