@@ -165,8 +165,15 @@ export const taskUpdatedTemplate = (employeeName: string, taskId: string, title:
 </div>
 `;
 
-export const taskAssignedTemplate = (employeeName: string, taskId: string, title: string, dueDate: string) => {
-  const formattedDueDate = new Date(dueDate).toLocaleDateString();
+export const taskAssignedTemplate = (
+  employeeName: string,
+  taskId: string,
+  title: string,
+  dueDate?: string | null,
+  description?: string | null,
+  priority?: string | null
+) => {
+  const formattedDueDate = dueDate ? new Date(dueDate).toLocaleDateString() : "No deadline set";
   return `
 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
   <div style="border-bottom: 2px solid #f4f4f5; padding-bottom: 15px; margin-bottom: 20px;">
@@ -177,6 +184,8 @@ export const taskAssignedTemplate = (employeeName: string, taskId: string, title
   <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; margin: 20px 0;">
     <p style="margin: 0 0 10px 0;"><strong>Task Ref:</strong> ${escapeHtml(taskId)}</p>
     <p style="margin: 0 0 10px 0;"><strong>Title:</strong> ${escapeHtml(title)}</p>
+    ${priority ? `<p style="margin: 0 0 10px 0;"><strong>Priority:</strong> ${escapeHtml(priority)}</p>` : ""}
+    ${description ? `<p style="margin: 0 0 10px 0;"><strong>Description:</strong> ${escapeHtml(description)}</p>` : ""}
     <p style="margin: 0; color: #ea580c; font-weight: bold;"><strong>Deadline:</strong> ${escapeHtml(formattedDueDate)}</p>
   </div>
   <p>Access your <a href="${sanitizeUrl((process.env.FRONTEND_URL || 'http://localhost:5173') + '/employee-dashboard')}" style="color: #4f46e5; text-decoration: none; font-weight: bold;">Employee Dashboard</a> to view full details.</p>

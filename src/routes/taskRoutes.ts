@@ -321,6 +321,26 @@ router.post("/", authenticateToken,
 
     const task = await createTask(allowed);
 
+    // ✉️ Email trigger: Task Created with Assigned Employee
+    const finalAssignee = task.assignedTo || task.assigned_to;
+    if (finalAssignee) {
+      pool.query('SELECT full_name AS "fullName", email, role FROM users WHERE id = $1 AND role = $2', [finalAssignee, 'Employee'])
+        .then(empRes => {
+          if (empRes.rows.length > 0) {
+            const emp = empRes.rows[0];
+            const html = taskAssignedTemplate(
+              emp.fullName,
+              task.id,
+              task.title,
+              task.dueDate || task.due_date,
+              task.description,
+              task.priority
+            );
+            return sendEmail(emp.email, `New Task Assigned: ${task.title}`, html);
+          }
+        }).catch(err => console.error("Task creation assigned email failed:", err));
+    }
+
     res.status(201).json({
       success: true,
       task,
@@ -546,19 +566,31 @@ router.put("/:id", authenticateToken, authorizeRoles(["Administrator", "Manager"
       logDescription = `WARNING: Task has been escalated to management!`;
     }
 
+    const previousAssignee = existingTask.assignedTo || existingTask.assigned_to || null;
+    const isNewlyAssigned = updates.assignedTo !== undefined &&
+      updates.assignedTo !== null &&
+      updates.assignedTo !== previousAssignee;
+
     // Pass everything to our new transaction service
     const task = await updateTask(taskId, updates, userId, userFullName, action, logDescription);
 
     // ==========================================
     // ✉️ EMAIL TRIGGERS
     // ==========================================
-    if (updates.status === "Assigned" && updates.assignedTo) {
-      pool.query('SELECT full_name AS "fullName", email FROM users WHERE id = $1', [updates.assignedTo])
+    if (isNewlyAssigned) {
+      pool.query('SELECT full_name AS "fullName", email, role FROM users WHERE id = $1 AND role = $2', [updates.assignedTo, 'Employee'])
         .then(empRes => {
           if (empRes.rows.length > 0) {
             const emp = empRes.rows[0];
-            const html = taskAssignedTemplate(emp.fullName, task.id, task.title, task.dueDate);
-            sendEmail(emp.email, `New Task Assigned: ${task.title}`, html);
+            const html = taskAssignedTemplate(
+              emp.fullName,
+              task.id,
+              task.title,
+              task.dueDate || task.due_date,
+              task.description,
+              task.priority
+            );
+            return sendEmail(emp.email, `New Task Assigned: ${task.title}`, html);
           }
         }).catch(err => console.error("Task assigned email failed:", err));
     }
@@ -590,9 +622,9 @@ router.put("/:id", authenticateToken, authorizeRoles(["Administrator", "Manager"
       }
     }
 
-    // ✉️ Task Updated → notify the assigned employee (non-status changes)
+    // ✉️ Task Updated → notify the assigned employee (non-status changes, when not newly assigned)
     const isStatusChange = ["Assigned", "In Progress", "Completed", "Escalated"].includes(updates.status);
-    if (!isStatusChange && task.assignedTo) {
+    if (!isStatusChange && task.assignedTo && !isNewlyAssigned) {
       const assignedToId = updates.assignedTo || task.assignedTo;
       if (assignedToId) {
         pool.query('SELECT full_name AS "fullName", email FROM users WHERE id = $1', [assignedToId])
